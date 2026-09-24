@@ -1,0 +1,33 @@
+{
+  "name": "dsh-desktop",
+  "version": "0.1.0",
+  "description": "DSH Desktop - 桌面壳包装官方 CLI npx @deepseek-ai/dsh web",
+  "main": "src/main.js",
+  "type": "module",
+  "author": "dsh-desktop",
+  "license": "MIT",
+  "scripts": {
+    "build:preload": "node tools/build-preload.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/acceptance.test.mjs",
+    "build": "pnpm build:preload && pnpm typecheck && pnpm test && electron-builder --win nsis --x64 --publish never",
+    "dev": "electron ."
+  },
+  "dependencies": {
+    "electron-log": "^5.3.0",
+    "electron-updater": "^6.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "cos-nodejs-sdk-v5": "^2.14.0",
+    "electron": "^36.0.0",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0",
+    "yaml": "^2.7.0"
+  },
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=9"
+  }
+}

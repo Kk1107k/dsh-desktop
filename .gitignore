@@ -3,7 +3,6 @@ dist/
 release/
 build/
 out/
-
 # electron-builder / electron-log 产物
 *.log
 logs/
@@ -11,18 +10,22 @@ logs/
 *.exe
 *.exe.blockmap
 *.yaml.bak
-
 # 用户数据与缓存
 userData/
 .DS_Store
 Thumbs.db
-
 # 环境变量与本地私有配置
 .env
 .env.*
 CLAUDE.local.md
-
 # 编辑器
 .vscode/
 .idea/
 *.swp
+build/preload.cjs
+*.corrupt
+.env.local
+*.pem
+*.p12
+secrets/
+pnpm-debug.log*

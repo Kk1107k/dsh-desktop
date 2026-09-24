@@ -75,8 +75,27 @@ python tools/gen_update_dialog.py   # src/update-dialog.html
 
 ## 环境要求
 
-Node ≥ 22、pnpm ≥ 9、**Electron ≥ 36**（必须内置 Node 22）。
-Windows-only（NSIS 安装包）；更新走 GitHub Releases 主通道 + 腾讯云 COS 国内兜底。
+Node ≥ 22（系统级、外部可见，供壳查找 `npx-cli.js`）、pnpm ≥ 9、**Electron ≥ 36**（内置 Node 22）。
+Windows 10/11 x64；全局缓存目录需可读写以访问 `@deepseek-ai/dsh@0.1.7-alpha`。
+
+## 安装与开发
+
+```bash
+git clone <repo>
+cd dsh-desktop
+pnpm install          # 必须用 pnpm，不要 npm install
+pnpm build:preload    # 重新生成 build/preload.cjs
+pnpm dev
+```
+
+`build` 顺序固定：`build:preload → typecheck → test → electron-builder --win nsis --x64 --publish never`，
+全部发布产物进入 `dist/`。
+
+## 双通道更新
+
+- 主源：GitHub Releases（`stable`）
+- 备源：腾讯云 COS（`cn-stable`，国内网络降级使用）
+- 开发态不执行真实更新，手动检查返回 `E_UNPACKAGED`
 
 ## 已知待决项
 

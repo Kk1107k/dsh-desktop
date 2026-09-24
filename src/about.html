@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'" />
+  <title>关于 DSH Desktop</title>
+  <style>
+    :root { color-scheme: light dark; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 16px; padding: 32px;
+      font: 14px/1.6 -apple-system, "Microsoft YaHei", "Segoe UI", sans-serif;
+      background: #f7f8fa; color: #1f2329;
+    }
+    .logo { width: 72px; height: 72px; border-radius: 14px; background: #0f1419; display: grid; place-items: center; color: #58a6ff; font-size: 28px; font-weight: 700; }
+    h1 { font-size: 16px; margin: 0; }
+    .row { color: #5b6470; font-size: 12px; }
+    .disclaim { color: #8a949e; font-size: 12px; max-width: 360px; text-align: center; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #0d1117; color: #e6edf3; }
+      .row, .disclaim { color: #9198a1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="logo">D</div>
+  <h1>DSH Desktop</h1>
+  <div class="row"><span id="ver">0.1.0</span> · MIT</div>
+  <div class="disclaim">本程序是对官方 CLI <code>@deepseek-ai/dsh</code> 的非官方桌面包装，与官方及上游无隶属或背书关系。</div>
+  <script>
+    // 版本号由主进程通过 file 协议静态注入；为避免硬编码漂移，首版直接以 build-time 变量替换。
+    document.getElementById('ver').textContent = '<占位 BUILD_VERSION>';
+  </script>
+</body>
+</html>

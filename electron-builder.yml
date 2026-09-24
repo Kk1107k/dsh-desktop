@@ -1,0 +1,34 @@
+appId: com.dshdesktop.app
+productName: DSH Desktop
+directories:
+  output: dist
+asar: true
+compression: maximum
+artifactName: "${productName}-Setup-${version}.${ext}"
+files:
+  - "src/**"
+  - "build/preload.cjs"
+  - "assets/**"
+  # 排除归档素材：选字体阶段的候选字体与对照图，不该进安装包
+  - "!assets/fonts/_archive/**"
+  - "!assets/_archive-*"
+  - "!assets/**/_archive/**"
+  - "package.json"
+  - "LICENSE"
+afterPack: tools/after-pack.cjs
+win:
+  target:
+    - nsis
+  icon: assets/icon.ico
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+publish:
+  - provider: github
+    owner: "<占位 OWNER>"
+    repo: "<占位 REPO>"
+    releaseType: release
+  - provider: generic
+    url: "https://<占位 COS 域名>/dsh-desktop"
+    channel: cn-stable
