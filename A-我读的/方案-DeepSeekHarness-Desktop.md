@@ -10,7 +10,7 @@
 |---|---|
 | 技术栈 | **Electron ≥ 36（内置 Node 22）+ electron-updater + electron-builder**（不选 Tauri 原因见 §7） |
 | 与 dsh 的关系 | Electron 壳 `spawn('npx', ['@deepseek-ai/dsh','web'])`，以本地 `127.0.0.1:3080` WebView 为主界面 |
-| 核心方法论 | **Spec-Driven 瀑布式外包**：国际版 GPT-6 只产 Spec → 国内版按 Spec 批量生成代码 → Claude Code（**DeepSeek V4.1 + GLM-5.3 双模型**）跑命令/编译/测试/修错 → 国际版做最终审计 |
+| 核心方法论 | **Spec-Driven 瀑布式外包**：国际版 GPT-6 只产 Spec → 国内版按 Spec 批量生成代码 → Claude Code（**DeepSeek V4.1 + GLM-5.3 双模型**）跑命令/编译/测试/修错 → **本地执行**最终审计（国际版额度已耗尽，改 0 积分） |
 | 模型与档位 | 详见 **§4.5**：每阶段用哪个模型、思考强度开几档、花多少钱，都有对照表 |
 | 积分预算 | 国际版 **140 积分 / 4 次深度会话**；国内版 **1000 积分**；Claude Code 走 API 按 token 计、边际成本最低 |
 | 国内更新兜底 | GitHub Releases 主通道 + **腾讯云 COS（ap-shanghai）镜像** 自动降级（你的环境 GitHub 慢/被墙） |
@@ -186,7 +186,7 @@
 
 | 资源 | 可用模型 | 上下文 | 思考强度怎么调 |
 |---|---|---|---|
-| **Claude Code** | **DeepSeek V4.1** + **GLM-5.3**（双模型可切） | GLM-5.3 达 **1M token** | `/effort` 五档：low · medium · high · **xhigh(显示为 Extra)** · max，外加 Ultracode 模式 |
+| **Claude Code** | **DeepSeek V4.1** + **GLM-5.3**（双模型可切） | GLM-5.3 **1M 级长上下文**（以实际接入版本为准） | `/effort` 五档：low · medium · high · **xhigh(显示为 Extra)** · max，外加 Ultracode 模式 |
 | **WorkBuddy 国际版** | GPT-5 ~ GPT-6 系列 | 长 | reasoning effort（低/中/高） |
 | **WorkBuddy 国内版** | 国产模型全家桶（DeepSeek / GLM / Qwen 等） | 视模型而定 | 多数带"深度思考"开关 |
 
@@ -195,7 +195,7 @@
 | 阶段 | 用哪个模型 | 思考强度 | 为什么这么配 |
 |---|---|---|---|
 | P0 架构 Spec | 国际版 GPT-6 | **high（最高档）** | 一次想错后面全废，这 60 积分是全案最值的一笔 |
-| P1 批量出码 | 国内版 · **GLM-5.3** | **medium（关深度思考）** | 按图纸砌砖，不需要深推理；关掉思考能省近一半时间和积分 |
+| P1 批量出码 | 国内版 · **GLM 最新可用版**（5.3 优先，否则 5.2 / Qwen / DeepSeek） | **medium（关深度思考）** | 按图纸砌砖，不需要深推理；关掉思考能省近一半时间和积分 |
 | P2.1 落地 autoUpdater | Claude Code · **DeepSeek V4.1** | **high** | 逻辑密度中等，标准编码档 |
 | P2.2 GitHub Actions | Claude Code · **DeepSeek V4.1** | **medium** | YAML 配置，低难度 |
 | P2.3 跑通 dev | Claude Code · **GLM-5.3** | **xhigh（Extra）** | 要通读整个项目 + 反复调工具；1M 上下文能一次吃下全部代码，xhigh 正是官方推荐的"长时间代理式任务"档 |
@@ -207,7 +207,7 @@
 
 ### Claude Code 双模型怎么选（你新接的 GLM-5.3 很关键）
 
-- **GLM-5.3 的杀手锏是 1M 上下文 + 长程任务定位** → 凡是"需要通读整个项目"或"跨文件连续改造"的活都给它。
+- **GLM-5.3 的杀手锏是长上下文（1M 级）+ 长程任务定位** → 凡是"需要通读整个项目"或"跨文件连续改造"的活都给它。
 - **DeepSeek V4.1 适合高频短迭代** → 修单个编译错、改一个文件、跑一轮构建。这类活占绝大多数，用它最划算。
 - **卡壳时换模型重试**：同一报错在 A 模型上连续 2 轮没解决，就切 B 模型重述问题。两个模型的错误模式不同，交叉验证的命中率明显更高。
 
@@ -236,7 +236,7 @@
 | 国际版 GPT-6 · P0 Spec | 1 次，high | ~60 积分 |
 | 国际版 GPT-6 · P3 审计 | 1 次，high | ~60 积分 |
 | 国际版应急（含失败重试） | 已实际发生 | **已用光** |
-| 国内版 · P1 批量出码（GLM-5.3, medium） | ~10 个模块 | ~600 积分 |
+| 国内版 · P1 批量出码（GLM 最新可用版, medium） | ~10 个模块 | ~600 积分 |
 | 国内版 · P4 文档 | 1~2 次，low | ~100 积分 |
 | 国内版应急返工 | — | ~150 积分 |
 | Claude Code · DeepSeek V4.1（medium/high 混用） | ~40~60 轮 | ~¥10~25 |

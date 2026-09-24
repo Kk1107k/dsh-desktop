@@ -15,8 +15,8 @@
 |---|---|---|---|---|---|
 | 0 | 本地准备 | — | — | — | 0 |
 | 1 | P0 架构 Spec | **国际版 GPT** | GPT-6 系列 | **high（最高）** | 60 积分 |
-| 2 | P1 批量出码 | **国内版 Agent** | GLM-5.3 | **medium（关深度思考）** | ~600 积分 |
-| 3 | P2.1/2.2 更新链路初稿 | **国内版 Agent** | GLM-5.3 / DeepSeek | **medium** | ~150 积分 |
+| 2 | P1 批量出码 | **国内版 Agent** | GLM 5.3 / 5.2（以列表为准） | **medium（关深度思考）** | ~600 积分 |
+| 3 | P2.1/2.2 更新链路初稿 | **国内版 Agent** | GLM 系列 / DeepSeek | **medium** | ~150 积分 |
 | 4 | P2.1/2.2 落地 | **Claude Code** | DeepSeek V4.1 | **high**（M08）/ **medium**（M11） | API ¥ |
 | 5 | P2.3 跑通 dev | **Claude Code** | GLM-5.3 | **xhigh（滑块显示 Extra）** | API ¥ |
 | 6 | P2.4 修编译错 | **Claude Code** | DeepSeek V4.1 | **medium** | API ¥ |
@@ -70,7 +70,7 @@ git init && git add . && git commit -m "chore: 交付素材与契约（页面/�
 | 项 | 内容 |
 |---|---|
 | **投喂** | `C-每一步投喂/step2-批量实现-国内版/prompt-B-国内版-批量实现.md` + **完整 SPEC.md**（粘在 prompt 的"附：SPEC.md"处） |
-| **模型** | 国内版 · **GLM-5.3**（列表里没有就用 Qwen-Max / DeepSeek 顶上） |
+| **模型** | 国内版 · **GLM 最新可用版**（列表里有 5.3 就用 5.3，否则 5.2 / Qwen-Max / DeepSeek） |
 | **思考强度** | **medium，关掉深度思考** —— 按图纸砌砖不需要深推理，关掉能省近一半时间和积分 |
 | **产出** | M01 / M02 / M04 / M05 / M06 / M07 / M09 / M10 / M12 共 9 个模块 |
 | **执行要点** | **一次性粘完，不要分次**（分次会丢模块间一致性） |
@@ -83,7 +83,7 @@ git init && git add . && git commit -m "chore: 交付素材与契约（页面/�
 | 项 | 内容 |
 |---|---|
 | **投喂** | SPEC.md 第 7 节（双通道状态机）+ 第 11 节（打包发布）+ `B-AI共享/INTERFACE.md` §6 |
-| **模型** | GLM-5.3 或 DeepSeek |
+| **模型** | GLM 系列或 DeepSeek（以国内版列表为准） |
 | **思考强度** | **medium** |
 | **产出** | `src/updater.js`（M08）与 `.github/workflows/release.yml`（M11）初稿 |
 | **验收点** | 失败判定正则 `/timeout\|ETIMEDOUT\|ENOTFOUND\|cloudflare\|404/i` 在位；COS 同步步骤指向 `dist/` |
@@ -109,7 +109,7 @@ claude                 # 或 claude --effort high
 | 项 | 内容 |
 |---|---|
 | **投喂** | `C-每一步投喂/step4-落地跑通修错-ClaudeCode/prompt-C-ClaudeCode-执行调试.md` |
-| **模型** | **GLM-5.3**（1M 上下文，能一次吃下全部代码） |
+| **模型** | **GLM-5.3**（长上下文，能一次吃下全部代码） |
 | **思考强度** | **xhigh**（滑块上显示为 **Extra**，不是最高档，最高是右边的 Max） |
 | **动作** | `pnpm install` → `npx tsc --noEmit` → `pnpm dev` |
 | **验收点** | splash 出现 → 主窗口接管 127.0.0.1:3080 → **托盘出现黑色鲸鱼图标** |

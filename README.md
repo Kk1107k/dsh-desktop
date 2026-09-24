@@ -46,7 +46,7 @@ dsh-desktop/
 ├─ C-每一步投喂/        ★ 按执行顺序，一个目录 = 一步
 │  ├─ step0-本地准备/
 │  ├─ step1-架构spec-国际版/         国际版 GPT-6 · high
-│  ├─ step2-批量实现-国内版/         国内版 GLM-5.3 · medium
+│  ├─ step2-批量实现-国内版/         国内版 GLM（5.3/5.2）· medium
 │  ├─ step3-更新链路初稿-国内版/     国内版 · medium
 │  ├─ step4-落地跑通修错-ClaudeCode/ GLM-5.3 xhigh → DS V4.1 medium
 │  ├─ step5-最终审计-国际版/         国际版 GPT-6 · high
