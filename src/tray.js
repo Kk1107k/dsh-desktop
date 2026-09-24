@@ -27,7 +27,8 @@ export function createTray({ logger, onOpen, onCheckUpdate, getRunMode, setRunMo
   function buildMenu() {
     /** @type {import('electron').MenuItemConstructorOptions[]} */
     const modes = [
-      { label: '标准', type: 'radio', checked: getRunMode() === 'standard', click: () => setRunMode('standard') },
+      // SPEC §8：首版仅标准模式启用，其余三项显式禁用。enabled 写死而非常依赖 Electron 默认值。
+      { label: '标准', type: 'radio', enabled: true, checked: getRunMode() === 'standard', click: () => setRunMode('standard') },
       { label: 'PTC', type: 'radio', checked: getRunMode() === 'ptc', enabled: false },
       { label: '极简', type: 'radio', checked: getRunMode() === 'minimal', enabled: false },
       { label: '创造', type: 'radio', checked: getRunMode() === 'creative', enabled: false },
