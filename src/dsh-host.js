@@ -15,6 +15,8 @@ const READY_DEADLINE_MS = 15000
 const RESTART_DELAYS_MS = [1000, 2000, 4000, 8000, 8000]
 const STABLE_RESET_MS = 5 * 60 * 1000
 const SHUTDOWN_WAIT_MS = 3000
+/** 强制 taskkill 后仍收不到 exit 时的兜底等待上限（正常应在数十毫秒内收到）。 */
+const FORCE_KILL_GRACE_MS = 2000
 const TAIL_BUFFER_BYTES = 64 * 1024
 
 const MIN_NODE_MAJOR = 22
@@ -491,7 +493,18 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
     }
     return new Promise(/** @param {(v:void)=>void} resolve */ (resolve) => {
       let done = false
-      const finish = () => { if (!done) { done = true; resolve() } }
+      let graceTimer = null
+      const finish = () => {
+        if (done) return
+        done = true
+        if (graceTimer) { clearTimeout(graceTimer); graceTimer = null }
+        resolve()
+      }
+      const onExit = () => { finalizeStopped(); finish() }
+      // child 可能在装配监听之前就已退出，只依赖 once('exit') 会永久等待。
+      if (child.exitCode !== null) { onExit(); return }
+      // 优雅路径与强制路径共用一个成功判据：本次 host 实际退出（SPEC §6）。
+      child.once('exit', onExit)
       let shutdown = null
       // 优先优雅关闭：dsh shutdown 末尾参数。运行时定位失败不阻塞回收，直接转强制。
       try {
@@ -505,17 +518,21 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
         log.warn('runtime unavailable for graceful shutdown, force killing tree', e)
         killTreeImmediate()
       }
-      let exited = false
-      child?.once('exit', () => { exited = true; finalizeStopped(); finish() })
       shutdown?.once('exit', () => {
-        if (exited) return
         // 仅靠 shutdown 命令返回 0 不算回收完成，必须以 host 实际退出为准。
       })
       setTimeout(() => {
-        if (exited) return
+        if (done) return
         log.warn('graceful shutdown timeout, killing tree')
         killTreeImmediate()
-        setTimeout(finish, 200)
+        // 兜底：强制回收后仍长时间收不到 exit 才放弃等待（避免 stop() 永久挂起）。
+        // unref，防止这个定时器自己变成"进程不退出"的残留句柄。
+        graceTimer = setTimeout(() => {
+          if (done) return
+          log.error('强制回收后仍未收到 host exit，停止等待')
+          finish()
+        }, FORCE_KILL_GRACE_MS)
+        graceTimer.unref?.()
       }, T.shutdownWait)
     })
   }
