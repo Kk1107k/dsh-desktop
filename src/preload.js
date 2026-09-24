@@ -8,14 +8,20 @@ const versionArg = argv.find(a => typeof a === 'string' && a.startsWith('--dsh-v
 const role = roleArg ? roleArg.slice('--dsh-role='.length) : ''
 const version = versionArg ? versionArg.slice('--dsh-version='.length) : undefined
 
-let cachedSnapshot = undefined
-let cachedStatus = undefined
-let cachedFinishRequested = false
+/** @typedef {{state?:string, [key:string]:unknown}} Snapshot */
+/** @type {Snapshot|undefined} */ let cachedSnapshot = undefined
+/** @type {string|undefined} */ let cachedStatus = undefined
+/** @type {boolean} */ let cachedFinishRequested = false
 
 /**
  * 安全订阅 IPC 推送：仅接受 (event, payload) 中的 payload，封装 try/catch。
+ * payload 来自 IPC，主进程契约之外的内容一律忽略。
+ * @param {string} channel
+ * @param {(payload:any)=>void} handler
+ * @returns {()=>void}
  */
 function subscribe(channel, handler) {
+  /** @param {unknown} _event @param {any} payload */
   const wrapper = (_event, payload) => handler(payload)
   ipcRenderer.on(channel, wrapper)
   return () => ipcRenderer.removeListener(channel, wrapper)
@@ -28,7 +34,7 @@ if (role === 'splash') {
      * @param {(text:string)=>void} cb
      */
     onStatus(cb) {
-      subscribe('dsh:splash-status', (p) => { cachedStatus = p?.text ?? cachedStatus; cb(p?.text ?? cachedStatus ?? '') })
+      subscribe('dsh:splash-status', /** @param {{text?:string}} p */ (p) => { cachedStatus = p?.text ?? cachedStatus; cb(p?.text ?? cachedStatus ?? '') })
     },
     /**
      * 订阅转场确认请求；received 表示主进程已判定门控通过。
@@ -46,10 +52,10 @@ if (role === 'splash') {
   contextBridge.exposeInMainWorld('updateAPI', {
     /**
      * 订阅更新状态；按 revision 丢弃旧快照。
-     * @param {(state:string, data?:object)=>void} cb
+     * @param {(state?:string, data?:object)=>void} cb
      */
     onState(cb) {
-      subscribe('dsh:update-state', (ev) => {
+      subscribe('dsh:update-state', /** @param {{revision?:number, snapshot?:Snapshot}} ev */ (ev) => {
         if (!ev || typeof ev.revision !== 'number') return
         cachedSnapshot = ev.snapshot ?? cachedSnapshot
         cb(ev.snapshot?.state, ev.snapshot)

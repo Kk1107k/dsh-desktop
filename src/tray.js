@@ -9,13 +9,13 @@ const STATE_ICON = {
 }
 
 /**
- * @param {{logger:object, onOpen:()=>void, onCheckUpdate:()=>void, getRunMode:()=>string, setRunMode:(m:string)=>void, onQuit:()=>void}} opts
+ * @param {{logger:import('./logger.js').Logger, onOpen:()=>void, onCheckUpdate:()=>void, getRunMode:()=>string, setRunMode:(m:string)=>void, onQuit:()=>void}} opts
  */
 export function createTray({ logger, onOpen, onCheckUpdate, getRunMode, setRunMode, onQuit }) {
   const log = logger
-  let tray = null
-  let currentState = 'idle'
-  let flashTimer = null
+  /** @type {import('electron').Tray|null} */ let tray = null
+  /** @type {'idle'|'update'|'running'} */ let currentState = 'idle'
+  /** @type {NodeJS.Timeout|null} */ let flashTimer = null
 
   const iconIdle = nativeImage.createFromPath(join(process.cwd(), 'assets', 'tray.png'))
   const iconUpdate = nativeImage.createFromPath(join(process.cwd(), 'assets', 'tray-update.png'))
@@ -25,6 +25,7 @@ export function createTray({ logger, onOpen, onCheckUpdate, getRunMode, setRunMo
   tray.setToolTip('DSH Desktop')
 
   function buildMenu() {
+    /** @type {import('electron').MenuItemConstructorOptions[]} */
     const modes = [
       { label: '标准', type: 'radio', checked: getRunMode() === 'standard', click: () => setRunMode('standard') },
       { label: 'PTC', type: 'radio', checked: getRunMode() === 'ptc', enabled: false },
@@ -52,9 +53,9 @@ export function createTray({ logger, onOpen, onCheckUpdate, getRunMode, setRunMo
   function setState(s) {
     if (currentState === s) return
     currentState = s
-    if (s === 'update') tray.setImage(iconUpdate)
-    else if (s === 'running') tray.setImage(iconRunning)
-    else tray.setImage(iconIdle)
+    if (s === 'update') tray?.setImage(iconUpdate)
+    else if (s === 'running') tray?.setImage(iconRunning)
+    else tray?.setImage(iconIdle)
   }
 
   function getState() { return currentState }
@@ -62,12 +63,12 @@ export function createTray({ logger, onOpen, onCheckUpdate, getRunMode, setRunMo
   /**
    * 闪现文字反馈（"已检查更新" 5s），不覆盖更高优先级徽章。
    * @param {string} text
-   * @param {number} ms
+   * @param {number} [ms]
    */
   function setFlashText(text, ms = 5000) {
-    tray.setToolTip(text)
+    tray?.setToolTip(text)
     if (flashTimer) clearTimeout(flashTimer)
-    flashTimer = setTimeout(() => { tray.setToolTip('DSH Desktop') }, ms)
+    flashTimer = setTimeout(() => { tray?.setToolTip('DSH Desktop') }, ms)
   }
 
   function destroy() {

@@ -57,6 +57,7 @@ export function createUpdater(opts) {
   let revision = 0
   let snapshot = { state: 'idle' }  // 内部状态含 downloaded/installing/snoozed
   let autoTimer = null
+  let checkTimer = null                 // 单源检查逻辑截止计时（SPEC §7：15s）
   let inflight = null
   let lastProgressAt = 0
   let downloadStartedAt = 0
@@ -133,11 +134,12 @@ export function createUpdater(opts) {
   }
 
   function syncTray(next, data) {
-    if (next === 'available' || next === 'downloading') opts.onTraySetState('update')
+    // 与 main.js 注入的回调名对齐：onTraySetState / onTraySetText（接口名不匹配会静默失效）。
+    if (next === 'available' || next === 'downloading') opts.onTraySetState?.('update')
     else if (next === 'latest') {
-      opts.onTraySetFlashText('已检查更新', 5000)
+      opts.onTraySetText?.('已检查更新', 5000)
     } else if (next === 'error') {
-      opts.onTraySetFlashText('更新检查失败', 5000)
+      opts.onTraySetText?.('更新检查失败', 5000)
     }
   }
 
@@ -160,22 +162,37 @@ export function createUpdater(opts) {
     setPageState('checking')
     activeSource = 'github'
 
-    const timeoutGuard = setTimeout(() => failSource('github', new Error('timeout')), CHECK_DEADLINE_MS)
+    clearCheckTimer()
+    // 单源检查逻辑截止 15s；事件先行到达时由 clearCheckTimer 撤销守卫。
+    checkTimer = setTimeout(() => {
+      if (pageState === 'checking' && activeSource === 'github') {
+        failSource('github', new Error('timeout'))
+      }
+    }, CHECK_DEADLINE_MS)
     inflight = new Promise((resolve) => {
       githubUpdater.checkForUpdates().then(() => { /* events 驱动 resolve */ }).catch(err => {
         failSource('github', err).then(resolve)
       })
       // 由事件回调解析 inflight
     })
-    clearTimeout(timeoutGuard)  // 事件流负责真正超时
     return { ok: true }
+  }
+
+  function clearCheckTimer() {
+    if (checkTimer) { clearTimeout(checkTimer); checkTimer = null }
   }
 
   async function failSource(source, err) {
     log.warn(`source ${source} failed`, err?.message || err)
+    // 晚到或陈旧的失败（检查已结束/已切状态）不再改变状态。
+    if (pageState !== 'checking') return
+    clearCheckTimer()
     if (source === 'github' && NETWORK_FAIL_RE.test(String(err?.message || err))) {
       activeSource = 'cos'
       setPageState('checking')
+      checkTimer = setTimeout(() => {
+        if (pageState === 'checking' && activeSource === 'cos') showNetworkFailure()
+      }, CHECK_DEADLINE_MS)
       try {
         await cosUpdater.checkForUpdates()
       } catch (e2) {
@@ -187,11 +204,13 @@ export function createUpdater(opts) {
   }
 
   function showNetworkFailure() {
+    clearCheckTimer()
     setPageState('error', { message: '无法连接更新服务' })
     opts.onUpdateOpen()
   }
 
   function onAvailable(source, info) {
+    clearCheckTimer()
     if (source === 'github') {
       agreedVersion = info?.version
       // GitHub 元数据不提供 sha512/size，由 onUpdateDownloaded 之后比对 cos 元数据；保留 null。
@@ -200,6 +219,7 @@ export function createUpdater(opts) {
     opts.onUpdateOpen()
   }
   function onNotAvailable(source) {
+    clearCheckTimer()
     setPageState('latest', { version: app.getVersion() })
     scheduleNext()
   }
@@ -222,9 +242,9 @@ export function createUpdater(opts) {
     installAndRestart()
   }
   function onError(source, err) {
-    if (pageState === 'downloading' && source === 'github') {
-      // 下载阶段 github 失败 → 校验相同镜像版本一致后切 cos。
-      tryDownloadCosMirror()
+    if (pageState === 'downloading') {
+      // 下载阶段失败：github → 校验相同镜像版本一致后切 cos；cos → error。
+      abortDownload(source, err)
       return
     }
     failSource(source, err)
@@ -322,6 +342,7 @@ export function createUpdater(opts) {
 
   function dispose() {
     if (autoTimer) { clearTimeout(autoTimer); autoTimer = null }
+    clearCheckTimer()
     inflight = null
   }
 

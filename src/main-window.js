@@ -7,6 +7,10 @@ import { dirname, join } from 'node:path'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
+/**
+ * @param {number} port
+ * @returns {string}
+ */
 const HOST_CSP = (port) => [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline'",
@@ -22,14 +26,14 @@ const HOST_CSP = (port) => [
 
 /**
  * 创建主窗口控制器。
- * @param {{config:{port:number}, logger:object}} opts
- * @returns {{win:import('electron').BrowserWindow, loadURL:(url:string)=>Promise<void>, show:()=>void, openUpdateWindow:()=>void, loaded:boolean, readyToShow:boolean, once:(ev:string,fn:()=>void)=>void}}
+ * @param {{config:{port:number}, logger:import('./logger.js').Logger}} opts
+ * @returns {{win:import('electron').BrowserWindow|null, loadURL:(url:string)=>Promise<void>, show:()=>void, openUpdateWindow:()=>void, loaded:boolean, readyToShow:boolean, once:(ev:string,fn:()=>void)=>void}}
  */
 export function createMainWindow({ config, logger }) {
   const log = logger
-  let win = null
-  let updateWin = null
-  const self = { loaded: false, readyToShow: false }
+  /** @type {import('electron').BrowserWindow|null} */ let win = null
+  /** @type {import('electron').BrowserWindow|null} */ let updateWin = null
+  const self = /** @type {{loaded:boolean, readyToShow:boolean, emit?:(ev:string)=>void}} */ ({ loaded: false, readyToShow: false })
 
   function create() {
     win = new BrowserWindow({
@@ -53,15 +57,14 @@ export function createMainWindow({ config, logger }) {
     })
 
     // 仅允许当前 loopback origin 主框架导航；拦截跨源跳转、重定向、webview 附加。
-    win.webContents.on('will-navigate', (e, url) => {
+    /** @param {import('electron').Event} e @param {string} url */
+    const guardNav = (e, url) => {
       const allowed = new RegExp(`^http://127\\.0\\.0\\.1:${config.port}/`)
       if (!allowed.test(url)) e.preventDefault()
-    })
+    }
+    win.webContents.on('will-navigate', guardNav)
+    win.webContents.on('will-redirect', guardNav)
     win.webContents.on('will-attach-webview', (e) => e.preventDefault())
-    win.webContents.on('will-redirect', (e, url) => {
-      const allowed = new RegExp(`^http://127\\.0\\.0\\.1:${config.port}/`)
-      if (!allowed.test(url)) e.preventDefault()
-    })
 
     // host session 安装统一的 onHeadersReceived；不关闭 webSecurity，不忽略证书错误。
     const hostSession = win.webContents.session
@@ -85,7 +88,12 @@ export function createMainWindow({ config, logger }) {
 
   create()
 
+  /**
+   * @param {string} url
+   * @returns {Promise<void>}
+   */
   function loadURL(url) {
+    if (!win) return Promise.reject(new Error('main window not created'))
     return win.loadURL(url)
   }
 
@@ -93,11 +101,14 @@ export function createMainWindow({ config, logger }) {
     if (win && !win.isDestroyed()) { win.show(); win.focus() }
   }
 
+  /**
+   * @returns {void}
+   */
   function openUpdateWindow() {
     if (updateWin && !updateWin.isDestroyed()) { updateWin.show(); updateWin.focus(); return }
-    updateWin = new BrowserWindow({
+    const newWin = new BrowserWindow({
       width: 560, height: 420, resizable: false,
-      parent: win, modal: true, show: false,
+      parent: win ?? undefined, modal: true, show: false,
       title: '更新',
       webPreferences: {
         preload: join(__dirname, '..', 'build', 'preload.cjs'),
@@ -106,17 +117,23 @@ export function createMainWindow({ config, logger }) {
         additionalArguments: [`--dsh-role=update`, `--dsh-version=${process.versions.electron}`],
       },
     })
-    updateWin.loadURL('dsh-app://ui/update-dialog.html')
-    updateWin.once('ready-to-show', () => updateWin.show())
-    updateWin.on('closed', () => { updateWin = null })
+    updateWin = newWin
+    newWin.loadURL('dsh-app://ui/update-dialog.html')
+    newWin.once('ready-to-show', () => newWin.show())
+    newWin.on('closed', () => { updateWin = null })
   }
 
   // 简易 once：从外部订阅 'ready-to-show'
+  /** @type {Map<string, Set<()=>void>>} */
   const listeners = new Map()
   self.emit = (ev) => { listeners.get(ev)?.forEach(fn => { try { fn() } catch (e) { log.error(e) } }) }
+  /**
+   * @param {string} ev
+   * @param {()=>void} fn
+   */
   function once(ev, fn) {
     if (!listeners.has(ev)) listeners.set(ev, new Set())
-    listeners.get(ev).add(fn)
+    listeners.get(ev)?.add(fn)
   }
 
   return { get win() { return win }, loadURL, show, openUpdateWindow, get loaded() { return self.loaded }, get readyToShow() { return self.readyToShow }, once }
