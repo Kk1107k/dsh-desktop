@@ -115,7 +115,10 @@ function updaterDeps() {
 }
 
 async function makeUpdater() {
-  globalThis.__DSH_TEST_UPDATER__ = {}
+  // 只在未初始化时兜底，**不得清空**：用例会把 behavior 设在调用之前，
+  // 清空会让 stub 找不到 behavior 而不 emit，状态停在 checking 直到 waitUntil 超时。
+  // 隔离由每个用例开头「整体替换」__DSH_TEST_UPDATER__ 保证（同时重置 instances）。
+  if (!globalThis.__DSH_TEST_UPDATER__) globalThis.__DSH_TEST_UPDATER__ = {}
   const { createUpdater } = await import('../src/updater.js')
   const { deps, d } = updaterDeps()
   return { up: createUpdater(deps), d }

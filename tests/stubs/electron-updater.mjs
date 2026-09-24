@@ -20,20 +20,26 @@ export class NsisUpdater extends EventEmitter {
     this.quitAndInstallCalled = false
     cfg().instances = (cfg().instances ?? []).concat(this)
   }
+  /**
+   * behavior 配置键：上面的注释与所有用例都用 cos 分组，
+   * 但 COS 实例的 config.provider 是 electron-updater 要求的 'generic'。
+   * 不映射会永远查不到 cos 行为（表现为不 emit → 状态停在 checking → 超时）。
+   */
+  get _cfgKey() { return this.config.provider === 'generic' ? 'cos' : this.config.provider }
   get channel() { return this._channel }
   set channel(v) { this._channel = v }
   async checkForUpdates() {
     this.checkCalls++
-    const behavior = cfg()[this.config.provider]?.check
+    const behavior = cfg()[this._cfgKey]?.check
     if (behavior) await behavior(this)
   }
   async downloadUpdate() {
     this.downloadCalls++
-    const behavior = cfg()[this.config.provider]?.download
+    const behavior = cfg()[this._cfgKey]?.download
     if (behavior) await behavior(this)
   }
   async getUpdateMetadata() {
-    return cfg()[this.config.provider]?.metadata ?? null
+    return cfg()[this._cfgKey]?.metadata ?? null
   }
   quitAndInstall() { this.quitAndInstallCalled = true }
 }
