@@ -1,3 +1,19 @@
+【使用方式 · CC-Switch 专用 · 先读这段】
+
+本文件用于**第一个终端**：模型 **GLM-5.3**，思考强度 **high**。
+CC-Switch 的两个约束决定了工作方式：
+
+- **换模型 = 重开终端 = 上下文丢失** → 所以不要为了"用更省的模型"中途切模型
+- **切思考强度要等当前这轮生成完** → 所以同一终端内可以分轮调整档位，但不能中途打断
+
+因此节奏是：
+1. 本终端（GLM-5.3）先做完「阶段 A」→ 自己跑验证 → **commit**
+2. 同一终端继续做「阶段 B」（生成完后把档位调成 xhigh）→ **commit**
+3. **只有卡在某处连续 2 轮没解决**，才重开终端切 DeepSeek V4.1；
+   新终端第一条消息直接粘 `接续上下文-换终端用.md` 并填好卡点
+
+每完成一个可提交的单元就 `git commit` —— 重开终端后，`git log` 就是你唯一能继承的记忆。
+
 【任务背景 · 必读】
 
 你是负责**执行**的工程师。架构已由 SPEC.md 冻结，你不需要也不允许重新做架构决策。
@@ -53,16 +69,27 @@ SPEC §6 明确要求：
 这三处都只在**错误/降级路径**才执行（host 启动失败、日志初始化、app 引用），
 所以编译期发现不了，真出问题时才炸 —— 必须提前修掉。
 
-### B. 跑通并修错
+## 阶段 A（本轮：GLM-5.3 + high，做完就 commit）
+
+1. 修 A0-1（`dsh-host.js` 的 `locateRuntime` 桩）
+2. 修 A0-2（三处 ESM 里的 `require`，注意**不要动 `src/preload.js`**）
+3. 补齐 5 个文件（`build-preload.mjs` / `after-pack.cjs` / `release.mjs` /
+   `.github/workflows/release.yml` / `tests/acceptance.test.mjs`）
+4. 跑 `pnpm install`，然后 `pnpm build:preload` 和 `pnpm typecheck` 修到全绿
+5. **commit**，回报 `git log -1 --oneline` 和阶段 A 的完成情况
+
+⚠ 阶段 A 先**不要**跑 `pnpm dev` / `pnpm build`（留给阶段 B）。
+   本轮结束标准：`build/preload.cjs` 能生成、`tsc --noEmit` 无错。
+
+## 阶段 B（同一终端，等阶段 A 生成完后把档位调成 xhigh）
 
 ```bash
-pnpm install
-pnpm build:preload
-pnpm typecheck        # tsc --noEmit
 pnpm test             # node --test tests/acceptance.test.mjs
 pnpm dev              # 应看到 splash → 主窗口接管 127.0.0.1:3080 → 托盘出现黑色鲸鱼图标
 pnpm build            # electron-builder --win nsis --x64 --publish never
 ```
+
+修错迭代，每修完一处 commit。卡壳 2 轮以上再按上面的规则换终端。
 
 【硬性约束 · 违反即返工】
 
