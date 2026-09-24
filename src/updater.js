@@ -31,7 +31,8 @@ function loadSnooze(filePath) {
   try {
     const raw = readFileSync(filePath, 'utf8')
     const parsed = JSON.parse(raw)
-    const until = Number(parsed.until) | 0
+    // 不能用 | 0 取整：毫秒时间戳超出 int32，会截断成负数（until 恒小于 now → snooze 失效）。
+    const until = Number(parsed.until)
     return Number.isFinite(until) ? until : 0
   } catch {
     const ts = new Date().toISOString().replace(/[:.]/g, '-')
