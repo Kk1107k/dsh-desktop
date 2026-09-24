@@ -36,6 +36,23 @@ SPEC §6 明确要求：
 `%APPDATA%\nvm`、fnm/volta 目录）拿到外部 `node.exe`，再由它反推 npm 安装根找 `npx-cli.js`；
 拿到后**实际校验文件存在**再返回。
 
+### A0-2 🔴 ESM 里用了 `require`（P0，运行时必崩）
+
+`package.json` 是 `"type": "module"`，以下三处在 ESM 文件里调用 `require`，
+运行到就会抛 `ReferenceError: require is not defined`：
+
+| 文件:行 | 现状 | 应改成 |
+|---|---|---|
+| `src/main.js:334` | `const { dialog } = require('electron')`（在 `promptRetryOrExit` 里） | 顶部统一 `import { app, BrowserWindow, protocol, session, dialog } from 'electron'` |
+| `src/ipc.js:133` | `require('electron').app` | 顶部 `import { app, ipcMain } from 'electron'` |
+| `src/logger.js:40` | `require('electron-log')` | 顶部 `import electronLog from 'electron-log'` |
+
+⚠ 例外：`src/preload.js` 里的 `require('electron')` **是对的**，它会由 esbuild 打成 CJS
+（`build/preload.cjs`），**不要改它**。
+
+这三处都只在**错误/降级路径**才执行（host 启动失败、日志初始化、app 引用），
+所以编译期发现不了，真出问题时才炸 —— 必须提前修掉。
+
 ### B. 跑通并修错
 
 ```bash
