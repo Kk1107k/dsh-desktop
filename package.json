@@ -9,7 +9,7 @@
   "scripts": {
     "build:preload": "node tools/build-preload.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --test-force-exit tests/acceptance.test.mjs",
+    "test": "node --test tests/acceptance.test.mjs",
     "build": "pnpm build:preload && pnpm typecheck && pnpm test && electron-builder --win nsis --x64 --publish never",
     "dev": "electron ."
   },
