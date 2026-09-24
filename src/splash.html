@@ -146,7 +146,15 @@
       statusEl.style.opacity = 1;
     }, 160);
   }
-  function finish() { document.body.classList.add('closing'); }
+  // onFinish 是"请求关闭"而不是"立即关闭"（SPEC §4 / D2）：
+  // 先加 .closing 播放 300ms 淡出，结束后才真正调用 close()。
+  function finish() {
+    if (document.body.classList.contains('closing')) return;   // 幂等
+    document.body.classList.add('closing');
+    setTimeout(function () {
+      if (api && api.close) api.close();
+    }, 300);
+  }
 
   function bind(id, fn) {
     var el = document.getElementById(id);

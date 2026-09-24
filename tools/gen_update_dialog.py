@@ -195,7 +195,10 @@ TEMPLATE = """<!DOCTYPE html>
     else if (state === 'error') api.retry && api.retry();
     else api.close && api.close();
   });
+  // "稍后" = 真的延后 24h（SPEC §7 / D3）：available 状态下先持久化 snooze 再关闭；
+  // 其他状态只是关闭窗口。找不到 snooze 时不能假装已延后 —— 直接关闭。
   btnS.addEventListener('click', function () {
+    if (state === 'available' && api && api.snooze) api.snooze();
     if (api && api.close) api.close();
   });
 
