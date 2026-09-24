@@ -15,6 +15,27 @@
 | `.github/workflows/release.yml` | SPEC §11 | `v*` tag 触发；校验 tag 等于包版本；Windows 构建并签名；上传安装包/blockmap/latest.yml/stable.yml 到 GitHub Releases；最后调 `tools/release.mjs` 同步 COS。`stable.yml` 从构建元数据生成，禁止虚构哈希 |
 | `tests/acceptance.test.mjs` | SPEC §12 | 用 mock 覆盖 A01~A10。`package.json` 的 test 脚本已指向它，缺了 `pnpm build` 会失败 |
 
+### A0. 🔴 先修一处阻塞级桩代码（P0，不修则 host 根本启不起来）
+
+`src/dsh-host.js` 的 `locateRuntime()` 目前是桩：
+
+```js
+const nodeExe = process.execPath        // ❌ 错：这是 Electron 可执行文件，不是外部 Node
+let npxCli = '<占位 npx-cli.js 绝对路径>'  // ❌ 占位未实现
+```
+
+SPEC §6 明确要求：
+- **禁止把 `process.execPath` 当 Node 用**（`ELECTRON_RUN_AS_NODE` 也不是可靠的"关闭开关"）
+- 必须定位**外部 Node 安装**对应的 `node.exe` 与 `npx-cli.js`，并以**绝对路径**传入
+- Windows 下不以 `shell:false` 直接跑 `npx.cmd`，也不拼 `cmd /c`
+- 最终调用形态：`spawn(nodeExe, [npxCli, "--yes", "--offline",
+  "--package=@deepseek-ai/dsh@0.1.7-alpha", "--", "dsh", "web", "--no-open"], options)`
+- 定位失败要报 `E_RUNTIME_MISSING` / `E_CLI_MISSING` 并给出环境准备提示，不要静默继续
+
+实现建议：查注册表 / `where node` / 常见安装目录（Program Files\nodejs、
+`%APPDATA%\nvm`、fnm/volta 目录）拿到外部 `node.exe`，再由它反推 npm 安装根找 `npx-cli.js`；
+拿到后**实际校验文件存在**再返回。
+
 ### B. 跑通并修错
 
 ```bash

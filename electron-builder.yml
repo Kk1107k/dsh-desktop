@@ -26,8 +26,8 @@ nsis:
   perMachine: false
 publish:
   - provider: github
-    owner: "<占位 OWNER>"
-    repo: "<占位 REPO>"
+    owner: "Kk1107k"
+    repo: "dsh-desktop"
     releaseType: release
   - provider: generic
     url: "https://<占位 COS 域名>/dsh-desktop"

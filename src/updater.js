@@ -76,8 +76,8 @@ export function createUpdater(opts) {
     const baseOpts = { autoDownload: false, autoInstallOnAppQuit: false, allowPrerelease: false, allowDowngrade: false }
     githubUpdater = new NsisUpdater({
       provider: 'github',
-      owner: '<占位 OWNER>',
-      repo: '<占位 REPO>',
+      owner: 'Kk1107k',
+      repo: 'dsh-desktop',
       ...baseOpts,
     })
     githubUpdater.channel = 'stable'
