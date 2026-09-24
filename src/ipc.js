@@ -1,6 +1,6 @@
 // 集中定义 channel、白名单、权限、处理器与推送出口；业务能力全部注入。
 // 仅本文件操作 ipcMain.handle 和业务 webContents.send。
-import { ipcMain } from 'electron'
+import { app, ipcMain } from 'electron'
 
 /**
  * IPC channel 名集中常量。
@@ -40,18 +40,49 @@ function authorize(event, expectedRole) {
 }
 
 /** 统一错误返回。 */
+/**
+ * @param {string} code
+ * @param {string} message
+ */
 function fail(code, message) { return { ok: false, error: { code, message } } }
 /** 统一成功返回。 */
+/**
+ * @param {object} data
+ */
 function ok(data) { return { ok: true, data } }
 
 /**
+ * @param {unknown} err
+ * @returns {string}
+ */
+function errMessage(err) { return err instanceof Error ? err.message : String(err ?? 'internal') }
+
+/**
+ * @typedef {object} IpcDeps
+ * @property {import('./logger.js').Logger} logger
+ * @property {{checkManual?:()=>Promise<{ok:boolean, error?:{code:string,message:string}}>, startDownload?:()=>Promise<{ok:boolean, error?:{code:string,message:string}}>, snooze?:()=>{ok:boolean, error?:{code:string,message:string}}, close?:()=>{ok:boolean, error?:{code:string,message:string}}, getInternalSnapshot?:()=>object}|null} [updater]
+ * @property {()=>import('electron').BrowserWindow|null} getSplash
+ * @property {()=>import('electron').BrowserWindow|null} getMain
+ * @property {()=>number} getGeneration
+ * @property {()=>void} setFinishRequested
+ * @property {()=>void} onSplashFinishConfirm
+ * @property {()=>void} onSplashCloseBeforeFinish
+ * @property {string} [lastSplashStatus]
+ * @property {boolean} [finishRequested]
+ * @property {()=>object|null} tray
+ */
+
+/**
  * 创建 IPC 控制器。
- * @param {object} deps
+ * @param {IpcDeps} deps
  */
 export function createIpc(deps) {
   const { logger } = deps
   let updaterRef = deps.updater
 
+  /**
+   * @param {IpcDeps['updater']} u
+   */
   function setUpdater(u) { updaterRef = u }
 
   function register() {
@@ -69,16 +100,17 @@ export function createIpc(deps) {
         return ok(bootstrap)
       } catch (err) {
         logger.error('bridge-ready error', err)
-        return fail('E_INTERNAL', err?.message || 'internal')
+        const msg = err instanceof Error ? err.message : 'internal'
+        return fail('E_INTERNAL', msg)
       }
     })
 
     ipcMain.handle(CHANNELS.SPLASH_MINIMIZE, async (event) => {
       try {
         if (!authorize(event, 'splash')) return fail('E_FORBIDDEN', 'not splash')
-        deps.getSplash()?.()?.minimize?.()
+        deps.getSplash?.()?.minimize?.()
         return ok({})
-      } catch (err) { return fail('E_INTERNAL', err?.message) }
+      } catch (err) { return fail('E_INTERNAL', errMessage(err)) }
     })
 
     ipcMain.handle(CHANNELS.SPLASH_CLOSE, async (event) => {
@@ -87,7 +119,7 @@ export function createIpc(deps) {
         // finishRequested 之前 = 取消启动；之后 = 转场确认。
         deps.onSplashCloseBeforeFinish?.()
         return ok({})
-      } catch (err) { return fail('E_INTERNAL', err?.message) }
+      } catch (err) { return fail('E_INTERNAL', errMessage(err)) }
     })
 
     ipcMain.handle(CHANNELS.CHECK_UPDATE, async (event) => {
@@ -96,7 +128,7 @@ export function createIpc(deps) {
         if (!getElectronApp().isPackaged) return fail('E_UNPACKAGED', 'dev mode')
         const res = await updaterRef?.checkManual?.()
         return res ?? fail('E_INTERNAL', 'updater unavailable')
-      } catch (err) { return fail('E_INTERNAL', err?.message) }
+      } catch (err) { return fail('E_INTERNAL', errMessage(err)) }
     })
 
     ipcMain.handle(CHANNELS.UPDATE_DOWNLOAD, async (event) => {
@@ -104,7 +136,7 @@ export function createIpc(deps) {
         if (!authorize(event, 'update')) return fail('E_FORBIDDEN', 'not update page')
         const res = await updaterRef?.startDownload?.()
         return res ?? fail('E_INTERNAL', 'updater unavailable')
-      } catch (err) { return fail('E_INTERNAL', err?.message) }
+      } catch (err) { return fail('E_INTERNAL', errMessage(err)) }
     })
 
     ipcMain.handle(CHANNELS.UPDATE_SNOOZE, async (event) => {
@@ -112,26 +144,35 @@ export function createIpc(deps) {
         if (!authorize(event, 'update')) return fail('E_FORBIDDEN', 'not update page')
         const res = updaterRef?.snooze?.()
         return res ?? fail('E_INTERNAL', 'updater unavailable')
-      } catch (err) { return fail('E_INTERNAL', err?.message) }
+      } catch (err) { return fail('E_INTERNAL', errMessage(err)) }
     })
 
     ipcMain.handle(CHANNELS.UPDATE_CLOSE, async (event) => {
       try {
         if (!authorize(event, 'update')) return fail('E_FORBIDDEN', 'not update page')
         const res = updaterRef?.close?.()
-        return res ?? fail('E_IO', err?.message)
-      } catch (err) { return fail('E_IO', err?.message) }
+        return res ?? fail('E_IO', 'updater unavailable')
+      } catch (err) { return fail('E_IO', errMessage(err)) }
     })
   }
 
+  /**
+   * @param {import('electron').IpcMainInvokeEvent} event
+   * @returns {Role|null}
+   */
   function readRoleFromEvent(event) {
-    const argv = event.senderFrame?.processArguments || []
+    // processArguments 存在于运行时（Electron 26+），typings 未收录，此处显式补型。
+    const frame = /** @type {import('electron').WebFrameMain & {processArguments?:string[]}} */ (event.senderFrame)
+    const argv = frame?.processArguments || []
     const arg = argv.find(a => typeof a === 'string' && a.startsWith('--dsh-role='))
-    return arg ? arg.slice('--dsh-role='.length) : null
+    return arg ? /** @type {Role} */ (arg.slice('--dsh-role='.length)) : null
   }
 
-  function getElectronApp() { return require('electron').app }
+  function getElectronApp() { return app }
 
+  /**
+   * @param {string} text
+   */
   function pushSplashStatus(text) {
     const win = deps.getSplash?.()
     if (!win || win.isDestroyed?.()) return
@@ -143,6 +184,9 @@ export function createIpc(deps) {
     if (!win || win.isDestroyed?.()) return
     win.webContents.send(CHANNELS.SPLASH_FINISH, {})
   }
+  /**
+   * @param {{revision:number, snapshot:object}} ev
+   */
   function pushUpdateState(ev) {
     const main = deps.getMain?.()
     if (!main || main.isDestroyed?.()) return

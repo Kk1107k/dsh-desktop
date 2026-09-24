@@ -1,5 +1,5 @@
 // 启动编排唯一入口：所有退出路径必须经 cleanupAndQuit，禁止在别处直接 app.quit。
-import { app, BrowserWindow, protocol, session } from 'electron'
+import { app, BrowserWindow, dialog, protocol, session } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, copyFileSync } from 'node:fs'
@@ -138,7 +138,7 @@ app.on('window-all-closed', e => {
 
 async function bootstrap() {
   state.config = loadConfig()
-  log = createLogger()
+  log = await createLogger()
   global.log = log
 
   protocol.handle('dsh-app', handleDshAppRequest)
@@ -331,7 +331,6 @@ function onUiLoadError() {
 
 function promptRetryOrExit(message) {
   // 简化实现：原生对话框，默认退出。重试触发下一代次启动。
-  const { dialog } = require('electron')
   state.generation++
   void dialog.showMessageBox({
     type: 'error',
