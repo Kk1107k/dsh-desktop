@@ -1,10 +1,382 @@
-# SPEC.md —— 占位文件
+# DSH Desktop 架构规格
 
-**这个文件是占位用的**，真实内容由 **step1（国际版 GPT-6 · high）** 产出并覆盖本文件。
+> 目标路径：`B-AI共享/SPEC.md`。本文是桌面壳实现、联调与验收的唯一架构基线。
+> 本版仅依据投喂包制定；上游 CLI 的未验证假定集中列入 §11.1，不冒充实测结论。
 
-- 投喂文件：`C-每一步投喂/step1-架构spec-国际版/prompt-A-国际版-架构spec.md`
-  + `README.md` + `INTERFACE.md`
-- 产出要求：200~400 行、12 节、**必须明确回答 D1–D5**
-- 产出后：git commit，**冻结**
+**目录**
 
-覆盖前请勿把本文件当真实 Spec 使用。
+[1. 项目元信息](#1-项目元信息) · [2. 目录树](#2-目录树) · [3. 模块职责](#3-模块职责) · [4. 进程模型](#4-进程模型)
+[5. IPC 协议](#5-ipc-协议) · [6. dsh host 子进程管理](#6-dsh-host-子进程管理) · [7. 自动更新双通道降级](#7-自动更新双通道降级) · [8. 托盘菜单设计](#8-托盘菜单设计)
+[9. 安全约束](#9-安全约束) · [10. 配置与存储](#10-配置与存储) · [11. 打包与发布](#11-打包与发布) · [12. 验收标准](#12-验收标准)
+
+## 1. 项目元信息
+
+| 项目 | 决定 |
+|---|---|
+| 名称 | npm 包名 `dsh-desktop`；产品名 `DSH Desktop`；appId `com.dshdesktop.app` |
+| 版本 | 桌面壳初始版本 `0.1.0`；上游 CLI 目标版本 `0.1.7-alpha`；两者独立管理 |
+| License | 桌面壳 MIT；分发时保留上游许可证及非官方、无隶属或背书关系的声明 |
+| 环境 | Node.js ≥22、pnpm ≥9、Electron ≥36；开发与 CI 使用相同 Node 主版本及锁文件 |
+| 平台 | 首版仅 Windows x64；仅构建 NSIS；使用 BrowserWindow 的 webContents 承载本地 Web UI |
+| 运行依赖 | `electron-updater: ^6.3.0`、`electron-log: ^5.3.0` |
+| 开发依赖 | `electron: ^36.0.0`、`electron-builder: ^26.0.0`、`typescript: ^5.8.0`、`@types/node: ^22.0.0`、`esbuild: ^0.25.0` |
+| 发布脚本依赖 | `cos-nodejs-sdk-v5: ^2.14.0`、`yaml: ^2.7.0`，均为 devDependencies；不进入渲染器 |
+依赖具体解析版本由 `pnpm-lock.yaml` 固定；CI 使用 `pnpm install --frozen-lockfile`；公开发布前完成依赖安全检查。
+源码使用 JavaScript ESM，`package.json` 设置 `"type": "module"`、`"main": "src/main.js"`；上游通过外部 CLI 调用，不作为壳的运行依赖导入。
+
+## 2. 目录树
+
+下树定义本规格涉及的文件；既有未列出的素材及投喂资料原样保留。`build/`、`dist/` 为生成目录，不提交。
+```text
+dsh-desktop/
+|-- package.json
+|-- pnpm-lock.yaml
+|-- tsconfig.json
+|-- electron-builder.yml
+|-- .editorconfig
+|-- .gitignore
+|-- LICENSE
+|-- README.md
+|-- CHANGELOG.md
+|-- .github/
+|   `-- workflows/
+|       `-- release.yml
+|-- B-AI共享/
+|   |-- INTERFACE.md
+|   `-- SPEC.md
+|-- assets/
+|   |-- icon.ico
+|   |-- tray.png
+|   |-- tray-update.png
+|   `-- tray-running.png
+|-- src/
+|   |-- main.js
+|   |-- dsh-host.js
+|   |-- preload.js
+|   |-- main-window.js
+|   |-- tray.js
+|   |-- updater.js
+|   |-- ipc.js
+|   |-- logger.js
+|   |-- contracts.d.ts
+|   |-- splash.html
+|   |-- update-dialog.html
+|   `-- about.html
+|-- tools/
+|   |-- gen_splash.py
+|   |-- gen_update_dialog.py
+|   |-- gen_whale_icons.py
+|   |-- build-preload.mjs
+|   |-- after-pack.cjs
+|   `-- release.mjs
+|-- tests/
+|   `-- acceptance.test.mjs
+|-- build/
+|   `-- preload.cjs
+`-- dist/
+    |-- DSH Desktop-Setup-<version>.exe
+    |-- DSH Desktop-Setup-<version>.exe.blockmap
+    |-- latest.yml
+    |-- stable.yml
+    `-- cn-stable.yml
+```
+安装资源内另生成 `resources/app-update.yml`；其构建中间位置为 `dist/win-unpacked/resources/app-update.yml`，不是项目根配置文件。
+
+## 3. 模块职责
+
+| 模块 | 文件 | 单一职责及边界 |
+|---|---|---|
+| M01 | `package.json`、`tsconfig.json`、`electron-builder.yml`、`.editorconfig`、`.gitignore` | 管理依赖、脚本、类型检查和打包；`allowJs/checkJs/strict/noEmit` 开启；忽略依赖、生成目录及密钥文件 |
+| M02 | `src/main.js` | 单例锁、启动编排、配置装载、窗口存活与统一退出；持有 `quitting`，不实现更新下载或 host 探测 |
+| M03 | `src/splash.html`、`tools/gen_splash.py` | 保持既有视觉结构，展示状态并执行淡出；仅经生成器补齐生命周期行为，不手改生成页 |
+| M04 | `src/dsh-host.js` | CLI 定位、启动、就绪探测、健康检查、重启及进程树回收；对外提供 `start/stop/getState` |
+| M05 | `src/preload.js`、`build/preload.cjs` | 将 M09 白名单映射为隔离桥；维护渲染端缓存，不读写配置、不执行命令 |
+| M06 | `src/main-window.js` | 创建主窗口及受信本地窗口、注册本地页面协议、维护 session 安全策略与导航限制 |
+| M07 | `src/tray.js` | 托盘生命周期、六项菜单和徽章；调用注入的业务函数，不自行注册 IPC |
+| M08 | `src/updater.js`、`src/update-dialog.html`、`tools/gen_update_dialog.py` | 更新调度、双源状态机、下载、延后记录与更新页；安装前交由 M02 完成退出清理 |
+| M09 | `src/ipc.js`、`src/contracts.d.ts` | 集中定义 channel、白名单、schema、权限、处理器与推送出口；业务能力通过参数注入 |
+| M10 | `src/logger.js` | 包装 electron-log，确定日志位置、轮转和脱敏；不捕获后吞掉致命错误 |
+| M11 | `.github/workflows/release.yml`、`tools/build-preload.mjs`、`tools/after-pack.cjs`、`tools/release.mjs` | 构建桥、生成发布元数据、签名打包、发布 GitHub Releases 并同步 COS |
+| M12 | `README.md`、`CHANGELOG.md`、`src/about.html`、`LICENSE` | 安装说明、版本变更、关于信息、许可与免责声明；不提供额外 Node 权限 |
+模块间业务调用使用普通函数或内部事件；仅 M09 操作 `ipcMain.handle` 和业务 `webContents.send`；测试统一位于 `tests/acceptance.test.mjs`。
+
+## 4. 进程模型
+
+**D2：最短展示 2400ms；淡出 300ms；主窗口加载成功且 ready-to-show 后，才发送关闭请求。**
+```text
+User        Main              Splash          Host             MainWindow / Tray
+ |--start--->|
+ |           |--acquire single-instance lock
+ |           |--create/show---->|
+ |           |--spawn-------------------------->|
+ |           |--GET /api/health---------------->|
+ |           |<---------------------------ready|
+ |           |--loadURL(hidden)-------------------------------->MainWindow
+ |           |<--------------------------------ready-to-show + loaded
+ |           |--onFinish------->|  [all gates passed]
+ |           |<--close()--------|  [after 300ms fade]
+ |           |--destroy splash; show/focus main; activate tray-->Tray
+ |--close main------------------------------------------------->hide
+ |--tray quit->|--stop host; release resources; exit
+```
+`t0` 使用主进程单调时钟，在 splash 首次 `show` 时记录；2400ms 从 `t0` 起算，不从应用进程创建时起算。
+转场条件为 `hostReady && mainLoaded && mainReadyToShow && elapsed >= 2400ms && !quitting`；所有条件取当前启动代次的值。
+条件满足后先显示已绘制的主窗口，再发送 `dsh:splash-finish`；splash 保持在上方淡出，避免露出空白桌面。
+页面收到 `onFinish` 后添加 `.closing`，300ms 后调用既有 `splashAPI.close()`；主进程仅在 `finishRequested` 状态将其解释为转场确认。
+转场确认最早在请求后 300ms 生效；1000ms 未收到确认时，主进程兜底销毁 splash，前提仍是主窗口加载成功。
+`finishRequested` 之前调用 `splashAPI.close()` 表示取消启动：设置 `quitting`、停止 host、退出，不留下后台进程。
+host 在一次 spawn 后 15s 内未就绪：推送“服务启动超时”，终止该次启动，并显示原生“重试 / 退出”对话框，默认选择退出。
+host 已就绪但主窗口 10s 内未加载成功，或主框架加载失败：进入 `E_UI_LOAD` 错误路径，禁止发送 finish。
+重试创建新的启动代次，清空旧探测与监听；恢复 splash 状态提示，不改其 DOM 结构，不无限播放“正在启动”。
+未取得单例锁的第二实例立即退出；已有实例收到 `second-instance` 后恢复并聚焦主窗口，启动未完成时聚焦 splash。
+主窗口关闭且 `quitting=false` 时执行 `preventDefault()` 和 `hide()`；仅托盘成功创建后启用此行为，托盘失败时保持可见并提示。
+真正退出由 M02 的唯一异步流程执行：停止更新调度、阻止重启、回收 host、销毁托盘与窗口，最后 `app.quit()`。
+主进程未处理异常或 Promise 拒绝必须记录并进入受控退出；渲染进程崩溃显示原生错误提示，禁止静默隐藏。
+
+## 5. IPC 协议
+
+**D1：选择方案 B，保留 `window.splashAPI` / `window.updateAPI`；只在各自受信页面暴露对应命名空间，不新增 `dshApi`。**
+**D4：当前安装版本统一来自 `app.getVersion()`，其来源为 `package.json.version`；契约 §1 的方法清单优先于 §4 概述，不新增 `updateAPI.getVersion()`。**
+
+```ts
+type State = "checking" | "latest" | "available" | "downloading" | "error";
+interface Empty {}
+interface StatusPayload { text: string }
+interface VersionData { version: string }
+interface AvailableData { version: string; notes: string }
+interface ProgressData { progress: number }
+interface ErrorData { message: string }
+type Snapshot =
+  | { state: "checking" }
+  | ({ state: "latest" } & VersionData)
+  | ({ state: "available" } & AvailableData)
+  | ({ state: "downloading" } & ProgressData)
+  | ({ state: "error" } & ErrorData);
+interface UpdateEvent { revision: number; snapshot: Snapshot }
+interface Bootstrap { version: string; status: string; finishRequested: boolean; update: UpdateEvent }
+type ErrorCode = "E_FORBIDDEN" | "E_PAYLOAD" | "E_INVALID_STATE" | "E_BUSY" | "E_IO" | "E_UNPACKAGED" | "E_INTERNAL";
+type Result<T> = { ok: true; data: T } | { ok: false; error: { code: ErrorCode; message: string } };
+interface SplashAPI { onStatus(cb: (text: string) => void): void; onFinish(cb: () => void): void; getVersion(): string | undefined; minimize(): void; close(): void }
+interface UpdateAPI { onState(cb: (state: State, data?: object) => void): void; getState(): Snapshot | undefined; startDownload(): void; retry(): void; close(): void; snooze(): void }
+```
+
+| channel | 方向 / 方式 | 请求或推送 schema；返回值 | 授权对象 / 错误码 |
+|---|---|---|---|
+| `dsh:bridge-ready` | renderer → main / handle | `Empty`；`Result<Bootstrap>` | splash、update；公共错误 |
+| `dsh:splash-minimize` | renderer → main / handle | `Empty`；`Result<Empty>` | splash；公共错误、`E_INVALID_STATE` |
+| `dsh:splash-close` | renderer → main / handle | `Empty`；`Result<Empty>` | splash；公共错误、`E_INVALID_STATE` |
+| `dsh:check-update` | renderer → main / handle | `Empty`；`Result<Empty>` | update 的 `retry()`；公共错误、`E_BUSY`、`E_UNPACKAGED` |
+| `dsh:update-download` | renderer → main / handle | `Empty`；`Result<Empty>` | update 的 `startDownload()`；公共错误、`E_INVALID_STATE`、`E_BUSY` |
+| `dsh:update-snooze` | renderer → main / handle | `Empty`；`Result<Empty>` | update 的 `snooze()`；公共错误、`E_INVALID_STATE`、`E_IO` |
+| `dsh:update-close` | renderer → main / handle | `Empty`；`Result<Empty>` | update 的 `close()`；公共错误、`E_IO` |
+| `dsh:splash-status` | main → renderer / send | `StatusPayload`；无返回 | splash；发送失败记录 `E_WINDOW_GONE` |
+| `dsh:splash-finish` | main → renderer / send | `Empty`；无返回 | splash；发送失败按 §4 兜底 |
+| `dsh:update-state` | main → renderer / send | `UpdateEvent`；无返回 | update；发送失败仅记录，状态保留于 M08 |
+
+`getVersion()` 同步读取 preload 启动时从 `additionalArguments` 获取的版本缓存；禁止改成 Promise，禁止读取渲染页面硬编码值。
+`getState()` 同步返回 preload 的最新快照，尚未同步时返回 `undefined`；更新页当前版本经 `latest.version` 传入，目标版本经 `available.version` 传入。
+preload 在页面订阅建立后调用内部 `dsh:bridge-ready`，取得状态补发；按 `revision` 丢弃旧更新快照，缓存 splash 状态及 finish 请求，避免早发事件丢失。
+`src/ipc.js` 顶层只定义纯数据与函数；主进程能力全部注入。preload 经 esbuild 打包为 `build/preload.cjs`，仅 external `electron`，禁止在 sandbox 中直接 require 本地模块。
+白名单描述及 channel 映射只定义在 M09；M05 据此包装调用。全部 `void` 方法内部处理 invoke 的结果和拒绝，不向页面泄露 Electron 事件对象。
+`onState` 将快照拆为 `(state, data)`；进度限定 `[0,1]`；订阅在页面卸载时清理，重新注册时补发当前状态；不增加公开取消订阅方法。
+公共错误为 `E_FORBIDDEN/E_PAYLOAD/E_INTERNAL`；非法参数拒绝执行，业务失败通过既有状态展示。唯一新增页面方法为 D3 明确要求的 `snooze()`。
+
+## 6. dsh host 子进程管理
+
+```text
+npx @deepseek-ai/dsh web --no-open
+```
+目标版本固定为 `@deepseek-ai/dsh@0.1.7-alpha`；运行前检查外部 Node ≥22、npm/npx 及该版本的缓存；缺失则报 `E_RUNTIME_MISSING` 或 `E_CLI_MISSING` 并提示准备环境。
+Windows 不以 `shell:false` 直接执行 `npx.cmd`，也不拼接 `cmd /c` 命令；定位外部 Node 安装对应的 `node.exe` 与 `npx-cli.js`，传绝对路径。
+实际调用为 `spawn(nodeExe, [npxCli, "--yes", "--offline", "--package=@deepseek-ai/dsh@0.1.7-alpha", "--", "dsh", "web", "--no-open"], options)`；此映射的兼容性按 §11.1 验证。
+环境覆盖为 `{ ...process.env, DSH_NO_BROWSER: "1", DSH_PORT: String(config.port), ELECTRON_RUN_AS_NODE: "0" }`；默认端口为 3080。
+该环境仅传给外部 Node；禁止把 `process.execPath` 当作 Node。`ELECTRON_RUN_AS_NODE` 的非空值不得被当成 Electron 的可靠“关闭开关”。
+`options` 固定 `shell:false`、`windowsHide:true`、`detached:false`、`stdio:["ignore","pipe","pipe"]`；工作目录为已创建的用户工作目录；保存启动代次及进程身份。
+启动前检查 `127.0.0.1:<port>` 是否已被占用；占用时返回 `E_PORT_IN_USE`，不接管现有服务、不杀占用者、不静默更换端口。
+每 250ms 发起一次 HTTP GET `http://127.0.0.1:<port>/api/health`，单次超时 1000ms；禁止重定向；当前子进程存活且响应 200 后进入 ready。
+stderr 出现独立单词 `ready` 仅触发立即 HTTP 探测，不单独判定成功；接口不存在时不得把任意 HTML 200 页替代为健康接口。
+每次 spawn 的就绪截止时间为 15000ms；探测请求、定时器和回调均绑定启动代次，旧代次响应不得改变当前状态。
+ready 后每 10s 探测一次，单次超时 2s且禁止重叠；连续三次失败视为失联，先回收本次进程树，再进入重启流程。
+首次启动失败走 §4 对话框；首次 ready 后的非主动退出或失联执行最多五次自动重启，等待依次为 `1s / 2s / 4s / 8s / 8s`。
+初次故障后重启编号为 1；第 5 次重启仍失败即第 6 次连续故障：停止自动重启，显示“服务连续启动失败”及“重试 / 退出”。
+连续稳定健康运行 5 分钟后清零重启预算；不能在进程刚 spawn 或刚 ready 时清零，否则会形成无限重启。
+重启期间主窗口保留且托盘取消绿色；健康恢复后重新加载同一 origin；旧实例回收失败时不启动新实例，转为终止错误。
+`stop()` 幂等；首先设置 stopping、取消健康探测及退避定时器，随后才发送关闭请求；stopping 状态下忽略所有重启触发。
+优雅关闭使用同一固定版本、同一端口环境执行逻辑命令 `dsh shutdown`，Windows 使用上述安全启动器将末尾参数改为 `"dsh", "shutdown"`。
+从发出 shutdown 起等待最多 3000ms；以本次 host 实际退出为成功，不能仅以 shutdown 命令返回 0 判定回收完成。
+Windows 超时后对本应用仍持有、身份已核对的进程树执行 `taskkill.exe /PID <pid> /T /F`；禁止按进程名称或端口批量杀进程。
+非 Windows 的测试适配器使用 `SIGKILL`；不能声称在 Windows 对单个 PID 调用 `kill("SIGKILL")` 就能可靠回收整棵进程树。
+上游必须以前台受控进程运行；包装器提前退出或服务脱离进程树属于 §11.1 阻塞项，禁止把未跟踪的后台服务算作启动成功。
+stdout/stderr 进入脱敏日志，内存尾部缓冲上限 64KiB；不把原始输出、令牌或工作路径直接推送给页面。
+
+## 7. 自动更新双通道降级
+
+**D3：点击“稍后”必须成功持久化 `until = Date.now() + 86400000`，然后关闭弹窗；未写成功不能伪装为已延后。**
+M08 管理两个独立 `NsisUpdater` 实例：GitHub 实例使用 `stable`，generic COS 实例使用 `cn-stable`；同一时刻只存在一个逻辑检查及一个活动下载。
+两实例均设置 `autoDownload=false`、`autoInstallOnAppQuit=false`、`allowPrerelease=false`；设置 channel 后再次明确 `allowDowngrade=false`。
+单源检查逻辑截止时间 15s；下载连续 30s 无进度视为网络失败，单源下载总时限 10 分钟；记录阶段、源与操作代次。
+网络降级匹配错误码及错误消息：`/timeout|ETIMEDOUT|ENOTFOUND|cloudflare|404|ERR_CERT|CERT_|SSL|ECONNRESET|ECONNREFUSED|UNABLE_TO_VERIFY|SELF_SIGNED/i`。
+
+```text
+idle --startup / every 6h / manual--> eligibility
+eligibility --automatic and now < until--> wait(until)
+eligibility --allowed--> checking(github, stable)
+checking --new version--> available
+checking --no new version--> idle + tray feedback(5s)
+checking --network failure--> checking(cos, cn-stable)
+checking(cos) --success--> available OR idle
+checking(cos) --failure--> error + manual-download dialog
+available --update now--> downloading(active source)
+available --later--> persist snooze --> wait(24h)
+downloading(github) --network failure--> verify same mirror release --> download(cos)
+downloading --verified package--> stop host --> install --> restart
+downloading --integrity/signature failure--> error
+error --retry--> new logical check, github first
+```
+
+应用启动且主窗口接管成功后触发首次自动检查；之后默认每 6h 调度；开发态不执行真实更新，手动请求返回 `E_UNPACKAGED`。
+主源实例配置 `{ provider:"github", owner:"<占位 OWNER>", repo:"<占位 REPO>" }`；备源配置 `{ provider:"generic", url:"https://<占位 COS 域名>/dsh-desktop", channel:"cn-stable" }`。
+降级必须切换实际 provider 实例；仅把 GitHub 实例的 channel 改成 `cn-stable` 不构成 COS 降级，禁止作为实现。
+每轮检查每源最多一次；自动触发与手动触发合并到同一轮，重复点击不创建新窗口、新检查或重复事件监听。
+超时使当前源的操作代次失效；晚到的 Promise 与事件全部忽略。旧实例仍未结束时不得在该实例上再发检查，防止交叉回调污染状态。
+下载降级前先取消原下载并等待退出；不能并行写入同一个更新缓存。取消无法结束时进入错误，不启动第二个下载。
+下载阶段切换 COS 必须重新读取元数据，确认目标版本、安装包 SHA-512 和大小与已获用户同意的 GitHub 版本一致；不一致报 `E_MIRROR_MISMATCH`。
+校验和错误、签名错误、非预期降级、无效元数据属于完整性错误，不通过换源或关闭校验绕过；错误记录进入日志。
+“已是最新”不新建弹窗，托盘文字显示“已检查更新”5s后恢复；已存在的重试窗口显示契约中的 `latest` 状态。
+页面状态严格限于五种；主进程内部的 `downloaded/installing/snoozed` 不新增页面枚举，安装前保持 `downloading` 且进度为 1。
+snooze 成功后重排下一次自动检查到 `until`；跨重启继续生效，超过 `until` 后启动则立即检查，不额外再等一个 6h 周期。
+生成器将“稍后”按钮改绑 `snooze()`；`available` 状态下的 `close()` 和窗口 X 同样执行 snooze，其他状态关闭只隐藏更新窗口。
+手动“检查更新…”绕过 snooze 和 `skipVersion`，但不清除它们；自动检查可获取被跳过版本的信息，但不弹窗、不下载该版本。
+更新说明统一转为纯文本并限制为 16KiB；当前安装版本来自包版本，待安装版本来自已校验元数据，禁止混淆二者。
+双源网络失败显示“无法连接更新服务”，提供原生“手动下载 / 关闭”按钮；下载地址固定为 `https://<占位官网域名>/download`，由主进程验证后打开。
+
+## 8. 托盘菜单设计
+
+| 序号 | 菜单 | 行为 |
+|---|---|---|
+| 1 | 打开 DSH 桌面 | 恢复、显示并聚焦主窗口；窗口已销毁时通过 M06 重建 |
+| 2 | 检查更新… | 调用 M08 手动检查，绕过延后；正在下载或安装时禁用 |
+| 3 | 运行模式 | radio 子菜单：标准 / PTC / 极简 / 创造，内部值为 `standard/ptc/minimal/creative` |
+| 4 | 设置 | 首版显示且禁用；设置页留到 Phase 4+，不猜测上游设置路由 |
+| 5 | 分隔线 | `type:"separator"` |
+| 6 | 退出 DSH Desktop | 调用 M02 唯一退出入口；不是隐藏窗口 |
+
+徽章优先级：发现未跳过的新版本或正在下载用 `tray-update.png`；否则 host 健康用 `tray-running.png`；启动、失联及停止用 `tray.png`。
+绿色仅表示“服务可用”，不表示正在生成内容；双击托盘等同打开主窗口；检查完成的文字反馈不覆盖更高优先级徽章。
+首版仅标准模式启用，其他三项显示但禁用；投喂包没有模式切换协议，必须按 §11.1 验证后另行启用，禁止只改勾选却不改变实际服务行为。
+
+## 9. 安全约束
+
+- 所有窗口均设置 `contextIsolation:true`、`nodeIntegration:false`、`webSecurity:true`、`webviewTag:false`；本规格连 splash 也设置 `sandbox:true`。
+- 主窗口直接 `loadURL("http://127.0.0.1:<port>")`，不使用 `<webview>` 标签，不注入桌面 preload，不暴露任何壳桥给上游页面。
+- splash、update 使用 `build/preload.cjs`；about 无 preload。桥的可用角色由主进程登记，不能由页面参数自行声明。
+- M02 在 ready 前注册标准且安全的 `dsh-app` 协议；M06 在 ready 后提供 `dsh-app://ui/splash.html`、`update-dialog.html`、`about.html`。
+- 协议处理器只服务固定页面及包内允许的素材；规范化路径并拒绝 `..`、编码穿越、未知 host、未知扩展名，不映射用户目录。
+- 本地页面 session 与 host session 分离；每个 session 的 `webRequest.onHeadersReceived` 只安装一个统一处理器，保留无关响应头。
+- 本地页面 CSP：`default-src 'self'; script-src 'self' <实际脚本SHA-256列表>; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`。
+- 本地 CSP 哈希从包内实际 inline script 内容计算；协议响应同时携带同一 CSP，禁止依赖页面伪造值，禁止为通过测试加入 `unsafe-eval`。
+- host CSP：`default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws://127.0.0.1:<port>; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`。
+- host 原有 CSP 更严格时保留并与壳策略共同生效；资源受阻必须记录并进入兼容性验证，不自动取消 CSP 或关闭 webSecurity。
+- 每个 IPC 请求校验登记的 webContents、`senderFrame === sender.mainFrame`、精确页面 URL、角色及 payload；上游窗口、子 frame 和未知窗口一律拒绝。
+- 本地页禁止导航到其他 URL；主窗口只允许当前 loopback origin 的主框架导航，拦截跨源跳转、重定向及所有 `will-attach-webview`。
+- `setWindowOpenHandler` 默认 deny；外部页面仅由主进程在明确用户操作后打开 HTTPS 白名单地址，禁止 `file:`、`javascript:` 及任意自定义协议。
+- 权限请求与权限检查默认拒绝；不自动授权摄像头、麦克风、定位、通知、屏幕捕获或任意设备访问。
+- 不调用忽略证书错误开关，不安装“信任所有证书”的处理器；COS 降级不能降低 TLS、安装包完整性或签名要求。
+- preload 不暴露 `ipcRenderer`、通用 send/invoke、文件系统、shell、任意 URL 打开器或命令执行器；回调只接收校验后的普通数据。
+- 本地 HTTP 服务仅允许绑定 loopback；壳配置、日志和 IPC 不存储或回传 API Key；上游认证材料由上游自行管理。
+
+## 10. 配置与存储
+
+M02 统一读取 `path.join(app.getPath("userData"), "config.json")`；应用名固定为 `dsh-desktop`，默认配置如下。
+```json
+{
+  "schemaVersion": 1,
+  "port": 3080,
+  "theme": "system",
+  "autoCheckIntervalHours": 6,
+  "runMode": "standard",
+  "skipVersion": null
+}
+```
+M08 单独维护 `path.join(app.getPath("userData"), "update-snooze.json")`，唯一业务字段为 `{ "until": <epoch毫秒整数> }`；首次使用值为 0。
+文件缺失使用默认值；损坏文件保留为带时间标记的 `.corrupt` 副本后恢复默认，并记录错误；不删除用户的其他文件。
+持久化串行执行，写同目录临时文件、flush、关闭后原子替换；写失败保留旧配置并返回 `E_IO`，不能先更新界面假装成功。
+端口限制 1024–65535，主题限定 `system/light/dark`，频率为 1–168 的整数；运行模式使用 §8 枚举，未实现模式启动时回退标准并明确提示。
+`skipVersion` 为 `null` 或合法版本字符串；仅影响自动提醒，不表示安装该版本；首版不新增“跳过”按钮。配置由 M02、延后文件由 M08 单一写入。
+日志位于 `path.join(app.getPath("userData"), "logs", "main.log")`，单文件上限 5MiB并轮转；统一遮蔽 Authorization、API Key、token 和敏感查询参数。
+
+## 11. 打包与发布
+
+```yaml
+appId: com.dshdesktop.app
+productName: DSH Desktop
+directories:
+  output: dist
+asar: true
+compression: maximum
+artifactName: "${productName}-Setup-${version}.${ext}"
+files: ["src/**", "build/preload.cjs", "assets/**", "package.json", "LICENSE"]
+afterPack: tools/after-pack.cjs
+win:
+  target: ["nsis"]
+  icon: assets/icon.ico
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+publish:
+  - provider: github
+    owner: "<占位 OWNER>"
+    repo: "<占位 REPO>"
+    releaseType: release
+  - provider: generic
+    url: "https://<占位 COS 域名>/dsh-desktop"
+    channel: cn-stable
+```
+`after-pack.cjs` 保留构建器生成的缓存目录等必要字段，将安装资源内 `app-update.yml` 的源字段规范化为国内兜底：
+```yaml
+provider: generic
+url: "https://<占位 COS 域名>/dsh-desktop"
+channel: cn-stable
+```
+运行时 M08 显式构造 GitHub 主实例并设 `stable`，失败才使用上述 COS 配置；静态 `app-update.yml` 不是自动主备切换器。
+脚本顺序固定为 `build:preload → typecheck → test → electron-builder --win nsis --x64 --publish never`；**D5：全部发布产物进入 `dist/`**。
+`release.yml` 在 `v*` tag 触发，校验 tag 等于包版本，Windows 构建并签名，然后上传 GitHub Releases，最后由 `tools/release.mjs` 同步 COS。
+GitHub 同时上传安装包、blockmap、`latest.yml`、`stable.yml`；`stable.yml` 从构建元数据生成，引用相同已签名产物，禁止虚构哈希。
+COS 安装包和 blockmap 上传到 `/dsh-desktop/<version>/<文件名>`；固定入口 `/dsh-desktop/cn-stable.yml` 的 `files[].url` 及兼容 `path` 改为 `<version>/<文件名>`。
+同步顺序固定为：上传版本化二进制 → 回读验证 SHA-512 和大小 → 最后更新 `cn-stable.yml`；只改路径不改哈希，失败保留旧入口且 CI 标红。
+二进制使用不可变缓存，元数据使用 `Cache-Control:no-cache`；签名证书及 COS 凭据只存 CI Secrets；客户端不携带任何发布密钥，未完成可信签名不得公开自动安装。
+
+### 11.1 上游契约假定与 Phase 2 阻塞项
+
+以下项目仅为输入规定的目标契约，未在本规格阶段实测；发现不一致时在本小节记录实际结果，由 Phase 2 完成壳侧适配与回归。
+
+| 待验证项 | 验证及不一致处理 |
+|---|---|
+| CLI 参数与包入口 | 验证固定版本接受 `web --no-open` 及 Windows 安全启动器参数；不支持时记录实际公开 CLI 用法，不伪造成功 |
+| 环境变量 | 验证 `DSH_NO_BROWSER`、`DSH_PORT` 的效果；`ELECTRON_RUN_AS_NODE=0` 仅为传给外部 Node 的隔离约定，不声称属于 dsh 协议 |
+| 健康接口 | 验证 `/api/health`、成功状态及响应语义；接口缺失时记录受支持的替代探测，未经适配不得通过 host 验收 |
+| 关闭命令 | 验证 `dsh shutdown` 是否存在及是否仅停止本壳目标实例；存在全局误停风险时禁止执行，记录为发布阻塞 |
+| 进程归属与绑定地址 | 验证前台运行、包装器生命周期、完整进程树回收及仅绑定 loopback；任何外部暴露或失去归属均阻止发布 |
+| 模式与 UI 兼容性 | 验证模式切换公开能力及 CSP 下的页面功能；缺少模式协议不阻塞标准模式，但其他模式保持禁用 |
+适配仅发生于 M04 的启动、探测和关闭边界；D1–D5、页面方法名、更新源语义及安全约束不得被联调人员静默改写。
+Mock 测试通过只证明壳状态机成立；§12 中涉及真实 host、安装、签名及更新下载的用例必须在目标 Windows 环境通过后才能标记发布完成。
+
+## 12. 验收标准
+
+| 编号 | 可执行断言 |
+|---|---|
+| A01 单例与启动 | **if** 连续启动两个实例且 host 在 1500ms 就绪、主窗口加载成功，**then** 只存在一个受控 host，第二实例退出，finish 不早于 splash 展示 2400ms，关闭不早于淡出 300ms |
+| A02 启动失败与取消 | **if** mock host 超过 15s 不就绪或用户提前关闭 splash，**then** 前者出现超时文案及重试/退出选择，后者退出；两条退出路径均无遗留 host、探测器或重启定时器 |
+| A03 健康与崩溃恢复 | **if** ready 后连续制造六次故障且期间未稳定运行 5 分钟，**then** 只发生五次自动重启，退避依次为 1/2/4/8/8 秒，第六次故障弹窗并停止自动重试 |
+| A04 主源更新与最新 | **if** GitHub 提供高于包版本的有效 stable 元数据，**then** 展示五态契约中的 available 且不自动下载；**if** 无新版，**then** 不新建弹窗并在 5s 后恢复托盘文字 |
+| A05 双源降级 | **if** GitHub 检查发生超时、404 或证书错误且 COS 有合法 cn-stable 元数据，**then** 真实请求转向 COS 且不降版本；**if** 两源均失败，**then** 展示手动下载入口 |
+| A06 延后持久化 | **if** 在时间 T 点击稍后并重启应用，**then** `until=T+86400000`，T+24h 前无自动检查或提醒，到期触发；手动检查仍有效，模拟写盘失败时不得关闭为成功状态 |
+| A07 IPC 与版本 | **if** 从 host 窗口、子 frame 或未知 URL 调用任意壳 channel，**then** 返回拒绝且无副作用；**if** 修改包版本后重新构建，**then** splash 和更新页当前版本同步改变，方法签名保持契约 |
+| A08 下载与安装 | **if** 用户立即更新且下载中主源失败，**then** 仅在 COS 版本/哈希/大小一致时续接；包校验或签名失败不安装；成功则先回收 host，再安装重启进入目标版本 |
+| A09 托盘与真实退出 | **if** 主窗口点击 X 且托盘可用，**then** 窗口隐藏、服务存活、菜单六项顺序正确；**if** 点击退出且 host 忽略 shutdown，**then** 3s 后启动进程树强制回收且不触发重启 |
+| A10 安装与发布一致性 | **if** 对合法版本 tag 执行发布流水线，**then** NSIS 允许选择安装目录并以当前用户安装，`dist/` 文件名符合 D5，GitHub/COS 二进制哈希相同，COS 元数据最后发布且实际下载成功 |
+
+验收记录必须区分 mock 与真实环境；任一安全、进程回收、签名或更新完整性用例失败，都不得以“界面正常”替代通过结论。
+SPEC.md 完成，共 12 节 / 376 行。
+下一步：把 SPEC.md 完整粘贴给 Prompt B。
