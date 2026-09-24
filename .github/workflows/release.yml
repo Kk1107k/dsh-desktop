@@ -1,0 +1,104 @@
+# M11：发布流水线（SPEC §11）。v* tag 触发；顺序固定：
+#   校验 tag == 包版本 → 构建（含签名）→ 上传 GitHub Releases → tools/release.mjs 同步 COS。
+# electron-builder.yml 配置了 github + generic 双 publish 源，构建统一用 --publish never，
+# 由本工作流用 gh CLI 受控上传（否则 electron-builder 会对占位 COS 域名发起上传而失败）。
+# stable.yml 从构建元数据（latest.yml）复制生成，引用相同已签名产物，禁止虚构哈希。
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # 创建 Release 并上传产物需要
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: 安装 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 校验 tag 等于包版本
+        shell: pwsh
+        run: |
+          $pkgVersion = node -p "JSON.parse(require('fs').readFileSync('package.json','utf8')).version"
+          if ("v$pkgVersion" -ne "${{ github.ref_name }}") {
+            Write-Error "tag ${{ github.ref_name }} 与 package.json 版本 v$pkgVersion 不一致"
+            exit 1
+          }
+
+      - name: 校验签名证书已配置
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+        run: |
+          # SPEC §11：未完成可信签名不得公开自动安装。
+          if ([string]::IsNullOrEmpty($env:CSC_LINK)) {
+            Write-Error "未配置 CSC_LINK 签名证书，拒绝发布"
+            exit 1
+          }
+
+      - name: 安装依赖（锁文件固定）
+        run: pnpm install --frozen-lockfile
+
+      - name: 打包 preload 桥（build/preload.cjs）
+        run: pnpm build:preload
+
+      - name: 类型检查
+        run: pnpm typecheck
+
+      - name: 验收测试
+        run: pnpm test
+
+      - name: 构建 NSIS 安装包（签名）
+        run: pnpm exec electron-builder --win nsis --x64 --publish never
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+
+      - name: 从构建元数据生成 stable.yml
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist/latest.yml)) {
+            Write-Error "dist/latest.yml 缺失，构建元数据不完整"
+            exit 1
+          }
+          Copy-Item dist/latest.yml dist/stable.yml
+
+      - name: 上传安装包 / blockmap / latest.yml / stable.yml 到 GitHub Releases
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $files = @(
+            (Get-Item "dist/DSH Desktop-Setup-*.exe").FullName
+            (Get-Item "dist/DSH Desktop-Setup-*.exe.blockmap").FullName
+            "dist/latest.yml"
+            "dist/stable.yml"
+          )
+          if (gh release view $tag) {
+            gh release upload $tag @files --clobber
+          } else {
+            gh release create $tag --title "DSH Desktop $tag" --generate-notes @files
+          }
+
+      - name: 同步 COS（上传版本化二进制 → 回读校验 → 最后更新 cn-stable.yml）
+        run: node tools/release.mjs
+        env:
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          COS_BUCKET: ${{ secrets.COS_BUCKET }}
+          COS_REGION: ${{ secrets.COS_REGION }}
