@@ -1,0 +1,209 @@
+【任务背景 · 必读】
+
+你是负责**执行**的工程师。架构已由 SPEC.md 冻结，你不需要也不允许重新做架构决策。
+前两阶段已完成：SPEC.md 已产（12 节 376 行），9 个模块已产并落盘到本仓库（18 个文件）。
+
+## 你现在要做的两件事
+
+### A. 补齐 5 个缺失文件（M11 打包发布 + 测试）
+
+| 文件 | 依据 | 硬性要求 |
+|---|---|---|
+| `tools/build-preload.mjs` | SPEC §3 M11、§5 末段 | esbuild 打包 `src/preload.js` → `build/preload.cjs`；**仅 external `electron`**；输出 CJS（package.json 是 ESM，preload 里用了 `require`，不打成 CJS 会直接崩）。注意源文件末尾有 `export {}`，打包时确认不报错 |
+| `tools/after-pack.cjs` | SPEC §11 | 保留构建器生成的必要字段，把安装资源内 `app-update.yml` 的源字段规范化为 COS：`provider: generic` / `url: https://<占位 COS 域名>/dsh-desktop` / `channel: cn-stable` |
+| `tools/release.mjs` | SPEC §11 | 顺序固定：上传版本化二进制到 `/dsh-desktop/<version>/<文件名>` → 回读验证 SHA-512 和大小 → 最后更新 `/dsh-desktop/cn-stable.yml`。只改路径不改哈希，失败保留旧入口 |
+| `.github/workflows/release.yml` | SPEC §11 | `v*` tag 触发；校验 tag 等于包版本；Windows 构建并签名；上传安装包/blockmap/latest.yml/stable.yml 到 GitHub Releases；最后调 `tools/release.mjs` 同步 COS。`stable.yml` 从构建元数据生成，禁止虚构哈希 |
+| `tests/acceptance.test.mjs` | SPEC §12 | 用 mock 覆盖 A01~A10。`package.json` 的 test 脚本已指向它，缺了 `pnpm build` 会失败 |
+
+### B. 跑通并修错
+
+```bash
+pnpm install
+pnpm build:preload
+pnpm typecheck        # tsc --noEmit
+pnpm test             # node --test tests/acceptance.test.mjs
+pnpm dev              # 应看到 splash → 主窗口接管 127.0.0.1:3080 → 托盘出现黑色鲸鱼图标
+pnpm build            # electron-builder --win nsis --x64 --publish never
+```
+
+【硬性约束 · 违反即返工】
+
+1. **不要改架构、不要改接口名**。`splashAPI`（onStatus/onFinish/getVersion/minimize/close）
+   与 `updateAPI`（onState/getState/startDownload/retry/close/snooze）已与页面契约逐字对齐，
+   擅自改名会导致**静默失效**（状态不动、弹窗不出），是最难查的一类 bug。
+2. **不要手改 `src/splash.html` 与 `src/update-dialog.html`** —— 它们是生成产物。
+   要改就改 `tools/gen_splash.py` / `tools/gen_update_dialog.py` 后重跑生成器。
+3. **不要改 D1–D5 的既定结论**：min-display 2400ms / 淡出 300ms / snooze 24h /
+   版本来自 `app.getVersion()` / 产物统一 `dist/`。
+4. **不要回退这两处已修的缺陷**：
+   - `electron-builder.yml` 的 NSIS 选项必须是 **`allowToChangeInstallationDirectory`**
+     （写成 `...Location` 是错键，会被静默忽略 → 安装时选不了目录）
+   - `files` 里必须保留 `!assets/fonts/_archive/**` 与 `!assets/_archive-*`
+     （否则归档素材被打进安装包）
+5. 遇到上游 CLI（`npx @deepseek-ai/dsh`）与 SPEC 不一致：
+   **记录到 SPEC.md §11.1，不要静默改写壳侧契约去迁就**。
+6. 占位符 `<占位 OWNER>` / `<占位 REPO>` / `<占位 COS 域名>` / `<占位官网域名>` 保持原样，不要编造。
+7. 每修完一处 `git commit -m "fix: ..."`，并回报一行 `git log -1 --oneline`。
+8. 不要 `npm install`，一律 `pnpm`。
+
+======================================================================
+附：Prompt C（执行调试任务说明）
+======================================================================
+
+# Prompt C · Claude Code + DeepSeek V4.1 — 执行调试
+
+> **使用方式**：在本地 git 仓库根目录的终端运行 Claude Code，把本 prompt 内容作为"任务说明"直接发给 Claude Code（可以 `claude "..."` 单行调用，也可以粘到会话内）。
+> **前置条件**：
+>   1. 已 git init `dsh-desktop/` 并提交
+>   2. SPEC.md + 9 个模块（M01/M02/M04/M05/M06/M07/M08/M09/M10/M12）已落地
+>   3. Claude Code 已能调用 DeepSeek V4.1 的 API（你的现有配置）
+> **预期输出**：可以 `pnpm dev` 启动看到 splash 与托盘的本地仓库，外加 Phase 2.2 的 `.github/workflows/release.yml`。
+
+---
+
+# 开始
+
+你是负责**执行**的工程师。你的搭档（已经设计好 SPEC.md 并产出 9 个模块初稿）需要你把这些代码**真的跑起来**。你不需要再做架构决策——一切都按 SPEC.md 办；你只需要解决"装包失败 / 编译报错 / 启动崩溃 / 托盘不出现"等问题。
+
+## 工作目录
+
+假设你已在 `dsh-desktop/` 仓库根目录下。所有命令相对此目录。
+
+## 第一步：环境与依赖
+
+```bash
+# 1. 确认 Node 版本
+node -v   # 必须 ≥ 22，低于则用 fnm/nvm 切到 22
+pnpm -v   # 必须 ≥ 9，没有则 npm i -g pnpm
+
+# 2. 安装依赖
+pnpm install
+# 若 ERESOLVE 报错：保留 lockfile，重试；仍然失败则贴出完整日志让我（搭档）处理
+
+# 3. 类型检查（用 JSDoc + tsc --checkJs）
+npx tsc --noEmit
+# 报错就逐条修，禁止 --skipLibCheck 全局跳过
+```
+
+## 第二步：把现有 9 个模块落地并跑 dev
+
+```bash
+# 如果模块文件还没落到本地，现在落
+# 然后启动 dev 模式
+pnpm dev
+# 应该看到 splash 出现 ~2s 后切到 127.0.0.1:3080 的 dsh Web UI
+# 系统托盘出现黑色鲸鱼图标（不是任何方块图标）
+```
+
+**若 dev 启动失败**，按以下顺序排查（**不要问我，先自己查**）：
+
+1. `cat ~/.config/dsh-desktop/logs/main.log`（electron-log 默认位置）
+2. `pnpm dev --verbose` 看详细输出
+3. `node --trace-warnings src/main.js` 跟踪警告
+4. Electron GPU 报错尝试 `app.disableHardwareAcceleration()`
+5. dsh 子进程 spawn 失败：手动跑 `npx @deepseek-ai/dsh web --no-open` 看是否启得动
+
+把每条修复 commit 到 git：`fix: <一句话描述>`。
+
+## 第三步：Phase 2.2 — 产出 `.github/workflows/release.yml`
+
+按 SPEC.md 第 11 节"打包与发布"的配置，写一个 GitHub Actions：
+
+```yaml
+name: release
+on:
+  push:
+    tags: ['v*']   # 推送 v0.1.0 触发
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm exec electron-builder --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 同步到腾讯云 COS
+      - name: Sync to COS
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          # 用 coscmd 或 mc 客户端
+          # secrets: COS_SECRET_ID / COS_SECRET_KEY / COS_BUCKET
+          coscmd upload -r ./dist/${{ github.event.repository.name }}-Setup-${{ github.ref_name }}.exe \
+            /dsh-desktop/v${{ github.ref_name }}/
+        env:
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+```
+
+确认 actions 能 dry-run 通过（用 `act` 工具本地测，或直接 push 到一个测试仓库看）。
+
+## 第四步：打包本地产物并验证
+
+```bash
+# 打包 Windows 安装包（不发布）
+pnpm exec electron-builder --win --publish never
+# 产物在 dist/ 下，文件名形如 dsh-desktop-Setup-0.1.0.exe
+# 体积 < 130MB
+# 在虚拟机或当前机器装一下，确保 NSIS 安装/卸载/启动一切正常
+```
+
+## 第五步：交付
+
+完成所有步骤后，输出：
+
+```text
+✅ Phase 2 完成
+- 仓库: https://github.com/<user>/dsh-desktop
+- 最新 commit: <sha>
+- 安装包路径: dist/dsh-desktop-Setup-<version>.exe (size: <MB>)
+- dev 模式启动耗时: <秒>
+- 已知问题: <0~3 条，每条含复现步骤和绕过方案>
+下一步：把仓库地址和 commit SHA 发给 Prompt D 跑最终审计。
+```
+
+## 反模式（避免）
+
+- ❌ 删 SPEC.md / 改 SPEC.md 推翻设计（除非发现致命缺陷并写入 SPEC.md 末尾的"修订记录"）
+- ❌ 把 splash 关掉的时机从 `mainWindow.on('ready-to-show')` 改为更早
+- ❌ 在 `electron-builder.yml` 加 macOS 配置（我们只 Windows）
+- ❌ 跑测试时把 `process.exit` 改 `process.exit(0)` 蒙混
+- ❌ 用 `--no-verify` 跳过 husky 提交检查（如果后续加入）
+
+## 失败升级
+
+如果连续 30 分钟无法解决某个错误（如依赖装不上、Electron 启动必崩），停下来输出：
+
+```text
+🚨 升级到搭档
+- 问题: <描述>
+- 已尝试: <列表>
+- 关键日志: <粘贴 30 行>
+- 我的猜测: <1~3 个可能根因>
+请人工/Phase 3 介入。
+```
+
+不要陷入死循环。
+
+# 结束
+
+---
+
+**使用提示**：
+- Claude Code + DeepSeek V4.1 单次会话能跑很多轮迭代，**不要中途打断它**。
+- 让它在每个 commit 后回报一行 `git log -1 --oneline`。
+- 如果仓库地址还没建，先建空仓 `dsh-desktop`（GitHub 国内可达性较好；否则用 Gitee 同步）。
+- 你只需要在 Phase 2 结束时 review 一次 Claude Code 的工作，途中不必打扰。
+
+======================================================================
+备注
+======================================================================
+
+- 完整架构基线在本地 `B-AI共享/SPEC.md`，直接读文件即可，无需粘贴。
+- 接口契约在 `B-AI共享/INTERFACE.md`。
+- 根目录 `CLAUDE.md` 已写死项目硬约束（含图标生成必须走 Chrome 光栅化）。
