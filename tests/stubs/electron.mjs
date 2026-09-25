@@ -64,6 +64,8 @@ export const protocol = {
   registerSchemesAsPrivileged() {},
   handle() {},
 }
+/** net 假件：main.js 的 dsh-app 协议处理器经它读包内页面；测试不走该路径，够顶层引用即可。 */
+export const net = { fetch: async () => new Response('', { status: 200 }) }
 export const session = { defaultSession: new EventEmitter() }
 export const dialog = { showMessageBox: async () => ({ response: 0 }) }
 export const shell = { openExternal: async () => {} }
