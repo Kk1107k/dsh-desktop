@@ -157,10 +157,19 @@ export function createUpdater(opts) {
     // 不应强制完整传输」。它依赖发布侧产出并上传 `.blockmap`（electron-builder 默认产出；
     // release.yml 与 tools/release.mjs 都必须把 .blockmap 带上）。此处显式写 false 表明**不禁用**，
     // 防止有人为图省事关掉差量（关掉会让每次更新都整包下载）。
+    // ⚠ 这里**刻意不写 allowPrerelease**：交给 electron-updater 按当前版本形态自动决定
+    // （AppUpdater.js:218 的默认 `this.allowPrerelease = hasPrereleaseComponents(currentVersion)`）。
+    // 为什么不能写死：
+    //   - 写 false：当前版本 `0.1.7-rc.2` 是预发布 ⇒ GitHubProvider 走 `/releases/latest`，
+    //     而该端点**只返回非预发布版本**，我们的 tag 也含 `-rc.2` 被 GitHub 视为预发布
+    //     ⇒ 报 `No published versions on GitHub`（装好的应用实测就是这个病征）。
+    //   - 写 true：将来的**正式版**客户端也会接受 alpha/beta，放宽过头。
+    //   - 自动：rc ⇒ true（能发现更高的 rc）；正式版 ⇒ false。自适应，两不越界。
+    // 历史教训：SPEC §7 定 allowPrerelease=false 的前提是"壳版本 = 0.1.0 正式版"；后来按官方铁律
+    // 把壳版本改为绑定 dsh 的 rc 版本 ⇒ 前提失效、旧决定反噬。见 SPEC §11.1。
     const baseOpts = {
       autoDownload: false,
       autoInstallOnAppQuit: false,
-      allowPrerelease: false,
       allowDowngrade: false,
       disableDifferentialDownload: false,
     }

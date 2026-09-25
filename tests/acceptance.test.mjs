@@ -1272,6 +1272,24 @@ test('§11.1 #7 根源：registry 由壳固定下发（不读用户 .npmrc），
   assert.ok(!/DSH_PORT:\s*String/.test(src), 'DSH_PORT 实测无效（§11.1 #2），不应再作为环境变量下发')
 })
 
+test('§7 allowPrerelease 交给上游自动决定（不得写死）', async () => {
+  const src = readFileSync(join(root, 'src', 'updater.js'), 'utf8')
+  assert.ok(!/allowPrerelease\s*:/.test(src),
+    '不得显式写 allowPrerelease：写 false 会漏掉 rc（/releases/latest 只返回非预发布版本）、写 true 会让正式版客户端也接受 alpha')
+  assert.match(src, /hasPrereleaseComponents/,
+    '注释里必须写明"自动决定"的依据（AppUpdater 的 hasPrereleaseComponents 默认），防止有人又写死')
+})
+
+test('§11.1 dshBuildDirty 不得被 CI 自造的文件污染', async () => {
+  const relSrc = readFileSync(join(root, '.github', 'workflows', 'release.yml'), 'utf8')
+  const targets = [...relSrc.matchAll(/Out-File -FilePath ([^\s]+)/g)].map(m => m[1])
+  assert.ok(targets.length > 0, '应能找到 workflow 的临时文件写入点')
+  for (const t of targets) {
+    assert.ok(/^\$env:GITHUB_OUTPUT/.test(t) || /^dist\//.test(t) || t.includes('RUNNER_TEMP'),
+      `临时文件必须写到 CI 输出变量或已忽略目录（当前: ${t}）—— 写到仓库根会让 dshBuildDirty 误报 true`)
+  }
+})
+
 test('§7 默认 COS 源：合法 https 且与打包配置同源（不许占位符进构建）', async () => {
   const YAML = require('yaml')
   const src = readFileSync(join(root, 'src', 'updater.js'), 'utf8')
@@ -1643,6 +1661,11 @@ test('A10 release.mjs：上传计划与入口改写（只改路径不改哈希�
   const info = resolveBuildInfo()
   assert.equal(typeof info, 'object')
   if (info.commit !== undefined) assert.match(info.commit, /^[0-9a-f]{7,40}$/i, 'commit 必须是十六进制，不得编造')
+  // dirty 必须与真实 git 状态一致；干净工作区下必须为 false（防"CI 自造文件"造成误报 —— 见 workflow 断言）
+  if (info.dirty === true) {
+    const raw = spawnSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).stdout ?? ''
+    assert.notEqual(raw.trim(), '', '工作区干净却报 dirty=true ⇒ 误报（检查是否有未 ignore 的文件）')
+  }
 
   const cn = buildCnStableDoc(doc, '0.1.0')
   assert.equal(cn.files[0].url, '0.1.0/DSH-Desktop-Setup-0.1.0.exe')

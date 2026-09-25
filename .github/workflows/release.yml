@@ -118,8 +118,10 @@ jobs:
           }
           $body = (gh release view $tag --json body -q .body)
           if ($body -notlike "*已签名构建*" -and $body -notlike "*未签名构建*") {
-            ($banner + "`n`n" + $body) | Out-File -FilePath notes.md -Encoding utf8
-            gh release edit $tag --notes-file notes.md
+            # 写到 dist/（已被 .gitignore 忽略）而不是仓库根：否则 git status --porcelain 非空，
+            # 会让随后 tools/release.mjs 的 dshBuildDirty 误报 true（元数据说"从脏工作区构建"）。
+            ($banner + "`n`n" + $body) | Out-File -FilePath dist/notes.md -Encoding utf8
+            gh release edit $tag --notes-file dist/notes.md
           } else {
             Write-Host "Release 说明已含签名状态，跳过。"
           }
