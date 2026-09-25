@@ -13,6 +13,10 @@ const cfg = () => {
 export class NsisUpdater extends EventEmitter {
   constructor(config) {
     super()
+    if (cfg().failConstruct) throw new Error('mock: 构造失败（模拟 electron-updater 初始化异常）')
+    // 复刻上游：GenericProvider 构造时会 `new URL(config.url)`，非法 URL（如占位符
+    // `https://<占位 COS 域名>/…`）直接抛 —— 这正是线上那个 unhandledRejection Invalid URL 的源头。
+    if (config.provider === 'generic' && config.url) void new URL(String(config.url))
     this.config = config
     this._channel = config.channel ?? null
     // 复刻上游：构造 options 里的 allowDowngrade 生效（AppUpdater.js:138）。

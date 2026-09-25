@@ -7,7 +7,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { register, createRequire } from 'node:module'
-import { spawnSync } from 'node:child_process'
+import { spawnSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createServer } from 'node:net'
 import { mkdirSync, mkdtempSync, existsSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs'
@@ -54,7 +54,12 @@ function waitEvent(host, ev, pred = null, ms = 20000) {
   })
 }
 
-const fakeLogger = () => ({ info() {}, warn() {}, error() {}, debug() {} })
+const fakeLogger = () => {
+  /** @type {[string,string][]} */
+  const calls = []
+  const rec = (lvl) => /** @param {...unknown} args */ (...args) => { calls.push([lvl, args.map(a => String(a)).join(' ')]) }
+  return { calls, info: rec('info'), warn: rec('warn'), error: rec('error'), debug: rec('debug') }
+}
 
 function setEnv(vars) {
   const saved = {}
@@ -83,13 +88,14 @@ function processGone(pid) {
   try { process.kill(Number(pid), 0); return false } catch (_) { return true }
 }
 
-function createFakeHost({ port, stateDir, timings }) {
+function createFakeHost({ port, stateDir, timings, ownerRecordPath }) {
   // dsh-host 经动态 import 拿到（此时 electron 假件已注册）。
   return import('../src/dsh-host.js').then(({ createDshHost }) => createDshHost({
     config: { port },
     logger: fakeLogger(),
     locateRuntime: () => ({ nodeExe: process.execPath, npxCli: FAKE_NPX }),
     timings,
+    ownerRecordPath,
   }))
 }
 
@@ -103,6 +109,9 @@ function updaterDeps() {
     logger: fakeLogger(),
     config: { autoCheckIntervalHours: 6 },
     isPackaged: true,
+    // 备源 feed URL 可注入：默认值是 SPEC 允许的占位符（不是合法 URL，见"备源未配置"用例）。
+    // 这里给一个合法地址，让 COS 降级相关的用例仍能真实驱动备源实例。
+    cosUrl: 'https://cos.test/dsh-desktop',
     onTrayState: () => 'idle',
     onTraySetState: (s) => { d.trayStates.push(s) },
     onTraySetText: (t, ms) => { d.flashes.push([t, ms]) },
@@ -200,6 +209,41 @@ test('A02 端口被占用 → E_PORT_IN_USE，不接管、不杀占用者', asyn
   occupier.close()
   await host.stop()
   restore(); rmSync(stateDir, { recursive: true, force: true })
+})
+
+test('§6 端口残留自愈：只回收"记录过 + 身份核对过"的自己人；别人的进程照报 E_PORT_IN_USE', async () => {
+  const stateDir = mktmp('dsh-reclaim-')
+  const restore = setEnv({ FAKE_MODE: 'serve', FAKE_STATE_DIR: stateDir })
+  const port = 3186
+  const recordPath = join(stateDir, 'host-owner.json')
+
+  // 造"上次崩溃残留"：直接起一个 fixture 占住端口，命令行带本壳固定包名 pin（与真实形态一致）
+  const leftover = spawn(process.execPath, [
+    FAKE_NPX, '--yes', '--offline', '--package=@deepseek-ai/dsh@0.1.7-alpha.2', '--', 'dsh', 'web', '--no-open', '--port', String(port),
+  ], { env: { ...process.env, FAKE_MODE: 'serve', FAKE_STATE_DIR: stateDir }, stdio: 'ignore', windowsHide: true })
+  try {
+    await waitUntil(() => existsSync(join(stateDir, 'listening')), 8000)
+
+    // 负例：没有记录 ⇒ 不得回收（哪怕占用者看起来像自己人）
+    const hostA = await createFakeHost({ port, stateDir, ownerRecordPath: recordPath })
+    await assert.rejects(hostA.start({ generation: 0 }), err => err.code === 'E_PORT_IN_USE', '没有记录时不得回收')
+    assert.ok(!processGone(leftover.pid), '不得杀掉身份不明的占用者（§6 禁止按端口批量杀）')
+    assert.ok(existsSync(join(stateDir, 'listening')), '占用者必须仍在服务')
+    await hostA.stop()
+
+    // 正例：记录里存过它（模拟上次就绪时写下的 owner）⇒ 应自愈
+    writeFileSync(recordPath, JSON.stringify({ pid: leftover.pid, port, generation: 0, package: '@deepseek-ai/dsh@0.1.7-alpha.2' }), 'utf8')
+    const hostB = await createFakeHost({ port, stateDir, ownerRecordPath: recordPath })
+    const readyP = waitEvent(hostB, 'ready', null, 20000)
+    await hostB.start({ generation: 0 })
+    await readyP
+    assert.equal(hostB.getState().state, 'ready', 'PID 记录匹配且身份核对通过时应回收自己人并正常就绪')
+    assert.ok(processGone(leftover.pid), '残留进程应已被回收')
+    await hostB.stop()
+  } finally {
+    try { process.kill(leftover.pid, 'SIGKILL') } catch (_) { /* 已回收 */ }
+    restore(); rmSync(stateDir, { recursive: true, force: true })
+  }
 })
 
 test('A02 mock host 15s 不就绪（压缩为 700ms）→ timeout 事件、终止本次启动、无自动重启、无遗留进程', async () => {
@@ -822,6 +866,57 @@ test('A09 更新窗口 X：available 下同按钮语义（先问主进程，只�
   await tick()
   assert.equal(calls, 2)
   assert.equal(upd.isDestroyed(), true, '允许关闭时才销毁')
+})
+
+test('§7 备源占位符 URL：初始化不得抛，按"备源未配置"处理（线上 Invalid URL 回归）', async () => {
+  globalThis.__DSH_TEST_UPDATER__ = { github: { check: (inst) => { inst.emit('update-not-available', {}) } } }
+  const { createUpdater } = await import('../src/updater.js')
+  const { deps } = updaterDeps()
+  delete deps.cosUrl                                   // 回到默认占位符 URL（SPEC §11.1 允许的待填形态）
+  const up = createUpdater(deps)                        // 构造不得抛
+
+  const res = await up.checkOnce({ manual: true })
+  assert.equal(res.ok, true, '备源未配置不得影响主源检查')
+  const instances = globalThis.__DSH_TEST_UPDATER__.instances ?? []
+  assert.equal(instances.length, 1, '占位符 URL 不得创建备源实例，更不得抛出')
+  assert.equal(instances[0].config.provider, 'github', '主源必须照常建立')
+  assert.ok(deps.logger.calls.some(([lvl, m]) => lvl === 'warn' && /备源未配置/.test(m)),
+    '应记一条"备源未配置"，让缺省状态可观测')
+  up.dispose()
+})
+
+test('§7 更新模块初始化失败：只影响更新，不影响 host；且其拒绝被分级为可恢复', async () => {
+  const stateDir = mktmp('dsh-upfail-')
+  const restore = setEnv({ FAKE_MODE: 'serve', FAKE_STATE_DIR: stateDir })
+  globalThis.__DSH_TEST_UPDATER__ = { failConstruct: true }
+
+  // 核心链路先起来
+  const host = await createFakeHost({ port: 3187, stateDir })
+  const readyP = waitEvent(host, 'ready', null, 8000)
+  await host.start({ generation: 0 })
+  await readyP
+  assert.equal(host.getState().state, 'ready')
+
+  // 更新模块整体初始化失败：必须返回业务错误而不是抛，且不得把 host 带走
+  const { createUpdater } = await import('../src/updater.js')
+  const { deps } = updaterDeps()
+  const up = createUpdater(deps)
+  const res = await up.checkOnce({ manual: true })
+  assert.equal(res.ok, false, '主源也起不来时返回业务错误（E_INTERNAL），不是抛')
+  assert.equal(host.getState().state, 'ready', '更新模块失败不得影响已就绪的 host')
+  assert.ok(host.isHealthy(), 'host 仍必须健康')
+
+  // 分级判据：更新模块的拒绝可恢复（只记录并继续）；核心链路仍走受控退出
+  const { isRecoverableRejection } = await import('../src/main.js')
+  const updErr = new Error('Invalid URL')
+  updErr.stack = 'Error: Invalid URL\n    at ensureInstances (file:///D:/x/src/updater.js:91:18)'
+  assert.equal(isRecoverableRejection(updErr), true, '更新模块的拒绝应判为可恢复')
+  const coreErr = new Error('boom')
+  coreErr.stack = 'Error: boom\n    at start (file:///D:/x/src/dsh-host.js:353:19)'
+  assert.equal(isRecoverableRejection(coreErr), false, '核心链路的拒绝必须仍走受控退出')
+
+  await host.stop()
+  up.dispose(); restore(); rmSync(stateDir, { recursive: true, force: true })
 })
 
 test('A09 splash 转场确认接线：finish 之前 close = 取消，之后 close = 转场确认', async () => {

@@ -196,7 +196,26 @@ process.on('uncaughtException', err => {
   else console.error('uncaughtException', err)
   cleanupAndQuit().finally(() => app.exit(1))
 })
+/**
+ * 可恢复（非核心链路）的异步拒绝：更新模块是可选功能，它的问题不该换来"应用完全不可用"。
+ * 实测：COS 占位符 URL 让 updater 构造抛 → unhandledRejection → 受控退出 → 把已就绪的 host
+ * 杀掉、主窗口 ERR_FAILED。判据：显式标记（err.recoverable）优先，其次看调用栈是否落在更新模块。
+ * 核心链路（main / host / window）的异常仍走受控退出。
+ */
+const RECOVERABLE_STACK_RE = /(?:src[\\/]updater\.js|electron-updater[\\/])/
+/** @param {unknown} reason */
+function isRecoverableRejection(reason) {
+  if (reason && typeof reason === 'object' && /** @type {{recoverable?:boolean}} */ (reason).recoverable === true) return true
+  const stack = reason instanceof Error ? reason.stack : ''
+  return typeof stack === 'string' && RECOVERABLE_STACK_RE.test(stack)
+}
+
 process.on('unhandledRejection', reason => {
+  if (isRecoverableRejection(reason)) {
+    if (log) log.error('unhandledRejection（更新模块，已忽略并继续运行）', reason)
+    else console.error('unhandledRejection (recoverable)', reason)
+    return
+  }
   if (log) log.error('unhandledRejection', reason)
   else console.error('unhandledRejection', reason)
   cleanupAndQuit().finally(() => app.exit(1))
@@ -227,7 +246,12 @@ async function bootstrap() {
 
   protocol.handle('dsh-app', handleDshAppRequest)
 
-  state.host = createDshHost({ config: state.config, logger: log })
+  state.host = createDshHost({
+    config: state.config,
+    logger: log,
+    // 供下次启动回收"本壳崩溃后残留的端口占用者"（按 PID + 身份核对，SPEC §6 允许的自愈）。
+    ownerRecordPath: join(app.getPath('userData'), 'host-owner.json'),
+  })
 
   state.splash = createSplashWindow()
   state.t0 = performance.now()
@@ -584,4 +608,4 @@ async function cleanupAndQuit() {
 }
 
 // re-exports for tests and tooling
-export { state, loadConfig, cleanupAndQuit, CHANNELS, SPEC_MIN_SPLASH_MS, SPEC_FADE_MS }
+export { state, loadConfig, cleanupAndQuit, isRecoverableRejection, CHANNELS, SPEC_MIN_SPLASH_MS, SPEC_FADE_MS }

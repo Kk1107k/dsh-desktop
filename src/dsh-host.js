@@ -3,7 +3,7 @@
 import { spawn, execFile, execFileSync } from 'node:child_process'
 import { createServer } from 'node:net'
 import { request } from 'node:http'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 
 // SPEC §6 冻结的 `0.1.7-alpha` 上游从未发布（npm 404）；实测发布的是 0.1.7-alpha.1/.2 与 0.1.7-rc.1/.2，
@@ -156,6 +156,67 @@ function runtimeError(code, message) {
 }
 
 /**
+ * 端口占用者 PID：只查询，不杀、不接管（SPEC §6 禁止按进程名或端口批量杀进程）。
+ * @param {number} port
+ * @returns {number|null}
+ */
+function findPortOwnerPid(port) {
+  try {
+    const out = execFileSync('netstat.exe', ['-ano'], { encoding: 'utf8', windowsHide: true, timeout: 5000 })
+    const m = out.match(new RegExp(`127\\.0\\.0\\.1:${port}\\s+\\S+\\s+LISTENING\\s+(\\d+)`))
+    return m ? Number(m[1]) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 读一个进程的命令行，用于**身份核对**（只认命令行里带本壳固定包名 pin 的那一个）。
+ * @param {number} pid
+ * @returns {string|null}
+ */
+function describeProcess(pid) {
+  try {
+    const ps = `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" | Select-Object -First 1 -ExpandProperty CommandLine)`
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-Command', ps], { encoding: 'utf8', windowsHide: true, timeout: 8000 })
+    const cmd = String(out ?? '').trim()
+    return cmd || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 记录"本壳确认过的端口占用者"，供下次启动回收自己崩溃后残留的孙进程。
+ * 只写 PID/端口/代次/包名 pin，不含任何凭据。
+ * @param {string|null|undefined} path
+ * @param {{pid:number, port:number, generation:number}} rec
+ */
+function writeOwnerRecord(path, rec) {
+  if (!path) return
+  try {
+    writeFileSync(path, JSON.stringify({ ...rec, package: TARGET_PKG }, null, 2), 'utf8')
+  } catch {
+    // 记录失败不影响运行（下次只是少一次自愈机会）。
+  }
+}
+
+/**
+ * 读回"本壳上次确认过的端口占用者"记录；缺失或损坏一律返回 null。
+ * @param {string|null|undefined} path
+ * @returns {{pid:number, port:number, generation:number, package?:string}|null}
+ */
+function readOwnerRecord(path) {
+  if (!path || !existsSync(path)) return null
+  try {
+    const r = JSON.parse(readFileSync(path, 'utf8'))
+    return (r && typeof r.pid === 'number' && typeof r.port === 'number') ? r : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * 定位外部 Node 与 npx-cli.js，以绝对路径返回；失败抛带 code 的错误，不静默继续。
  * 禁止把 process.execPath 当作 Node；ELECTRON_RUN_AS_NODE 非可靠开关。
  * @returns {Runtime}
@@ -252,9 +313,10 @@ function probeIndex(port, token, timeoutMs) {
 
 /**
  * 创建 host 控制器。
- * @param {{config:{port:number}, logger:import('./logger.js').Logger, locateRuntime?:(()=>Runtime), timings?:HostTimings}} [opts]
+ * @param {{config:{port:number}, logger:import('./logger.js').Logger, locateRuntime?:(()=>Runtime), timings?:HostTimings, ownerRecordPath?:string}} [opts]
+ *   ownerRecordPath：记录"本壳确认过的端口占用者"的文件路径，供下次启动回收自己崩溃后的残留（可选）。
  */
-export function createDshHost({ config, logger, locateRuntime: locate = locateRuntime, timings } = /** @type {{config:{port:number}, logger:import('./logger.js').Logger}} */ ({})) {
+export function createDshHost({ config, logger, locateRuntime: locate = locateRuntime, timings, ownerRecordPath } = /** @type {{config:{port:number}, logger:import('./logger.js').Logger, ownerRecordPath?:string}} */ ({})) {
   const log = logger
   const T = {
     readyDeadline: timings?.readyDeadline ?? READY_DEADLINE_MS,
@@ -336,6 +398,43 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
   }
 
   /**
+   * 尝试回收"本壳自己崩溃后残留"的端口占用者。判据三重，缺一不可
+   * （SPEC §6：只杀按 PID 树核对过的自己人，禁止按进程名或端口批量杀）：
+   *   1. 记录里存过这个 PID（上次就绪时确认过的端口占用者）；
+   *   2. 该 PID 现在确实是这个端口的占用者；
+   *   3. 身份核对：其命令行里含本壳固定的包名 pin（防 PID 重用，也防误杀别人的 dsh）。
+   * @param {number} port
+   * @returns {Promise<boolean>} true = 已完成回收且端口确认空闲
+   */
+  async function reclaimOwnLeftover(port) {
+    const rec = readOwnerRecord(ownerRecordPath)
+    const owner = findPortOwnerPid(port)
+    if (!rec || !owner || rec.pid !== owner || rec.port !== port) return false
+    const cmd = describeProcess(owner)
+    if (!cmd || !cmd.includes(TARGET_PKG)) {
+      log.warn(`端口 ${port} 被占用，占用者 PID=${owner} 身份与本壳记录不符，不回收（按 §6 交给上层报 E_PORT_IN_USE）`)
+      return false
+    }
+    log.warn(`端口 ${port} 被上次残留的本壳进程占用（PID=${owner}），按身份核对后回收其进程树`)
+    try {
+      if (process.platform === 'win32') {
+        execFileSync('taskkill.exe', ['/PID', String(owner), '/T', '/F'], { windowsHide: true, timeout: 5000 })
+      } else {
+        process.kill(owner, 'SIGKILL')
+      }
+    } catch (e) {
+      log.error('回收残留进程失败', e instanceof Error ? e.message : String(e))
+      return false
+    }
+    // 回收后复查端口：最多等 3s，避免"已杀但尚未释放"被误判成占用。
+    for (let i = 0; i < 30; i++) {
+      if (await isPortFree(port)) return true
+      await new Promise(/** @param {(v:void)=>void} r */ (r) => setTimeout(r, 100))
+    }
+    return false
+  }
+
+  /**
    * 启动 host。每次自增代次；包括首次启动都经此入口。
    * @param {{generation?:number}} [opts]
    * @returns {Promise<void>}
@@ -350,10 +449,14 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
     emit('starting', { generation })
 
     if (!(await isPortFree(config.port))) {
-      const err = runtimeError('E_PORT_IN_USE', `端口 ${config.port} 已被占用`)
-      log.error(err.message)
-      emit('crashed', { generation, error: err })
-      throw err
+      // SPEC §6：不接管、不杀占用者、不静默换端口。但"本壳上次崩溃残留的自己人"必须先回收 ——
+      // 否则重试永远撞自己的残骸（实测线上：崩溃后 dsh 孙进程继续占 3080，两次重试都 E_PORT_IN_USE）。
+      if (!(await reclaimOwnLeftover(config.port))) {
+        const err = runtimeError('E_PORT_IN_USE', `端口 ${config.port} 已被占用`)
+        log.error(err.message)
+        emit('crashed', { generation, error: err })
+        throw err
+      }
     }
 
     const { nodeExe, npxCli } = locate()
@@ -479,6 +582,10 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
     if (state !== 'starting') return
     stopProbes()
     setState('ready')
+    // 此时端口占用者已被证明是本壳的子进程（就绪行的 token 就来自它自己的 stdout），
+    // 记下它的 PID 供下次启动回收"自己崩溃后残留的孙进程"（见 reclaimOwnLeftover）。
+    const ownerPid = findPortOwnerPid(config.port)
+    if (ownerPid) writeOwnerRecord(ownerRecordPath, { pid: ownerPid, port: config.port, generation })
     emit('ready', { generation, port: readyInfo?.port ?? config.port })
     scheduleHealthChecks()
     // 稳定 5 分钟后清零重启预算，避免在 ready 阶段一次性清零形成无限重启。

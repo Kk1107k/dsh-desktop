@@ -10,6 +10,28 @@ const DOWNLOAD_TOTAL_DEADLINE_MS = 10 * 60 * 1000
 const AUTO_INTERVAL_DEFAULT_H = 6
 const SNOOZE_DURATION_MS = 24 * 60 * 60 * 1000
 const NETWORK_FAIL_RE = /timeout|ETIMEDOUT|ENOTFOUND|cloudflare|404|ERR_CERT|CERT_|SSL|ECONNRESET|ECONNREFUSED|UNABLE_TO_VERIFY|SELF_SIGNED/i
+/**
+ * 备源 feed URL 的默认值。SPEC §11.1 明确 `https://<占位 COS 域名>/dsh-desktop` 这种占位形态是允许的
+ * （真实域名待填），但**它不是合法 URL** —— electron-updater 的 GenericProvider 会在构造时
+ * `new URL` 直接抛（实测线上：unhandledRejection Invalid URL → 壳退出）。
+ * 因此代码必须容忍占位符：构造不了就把该源记为"未配置"，绝不冒泡。
+ */
+const DEFAULT_COS_URL = 'https://<占位 COS 域名>/dsh-desktop'
+
+/**
+ * 是否为可用的 http(s) 地址（占位符与空串都不算）。
+ * @param {unknown} u
+ * @returns {boolean}
+ */
+function isHttpUrl(u) {
+  if (typeof u !== 'string' || !u) return false
+  try {
+    const parsed = new URL(u)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
 
 /**
  * 持久化 snooze；失败返回 E_IO 而非假装成功。
@@ -43,16 +65,20 @@ function loadSnooze(filePath) {
 
 /**
  * 创建更新控制器。
- * @param {{logger:object, config:object, isPackaged:boolean, onTraySetState:(s:string)=>void, onTraySetText:(t:string, ms?:number)=>void, onUpdateState:(ev:object)=>void, onUpdateOpen:()=>void, onHostStopBeforeInstall:()=>void, onHostRestartAfterInstall:()=>void}} opts
+ * @param {{logger:object, config:object, isPackaged:boolean, cosUrl?:string, onTraySetState:(s:string)=>void, onTraySetText:(t:string, ms?:number)=>void, onUpdateState:(ev:object)=>void, onUpdateOpen:()=>void, onHostStopBeforeInstall:()=>void, onHostRestartAfterInstall:()=>void}} opts
  */
 export function createUpdater(opts) {
   const { logger, config, isPackaged } = opts
   const log = logger
   const snoozePath = join(app.getPath('userData'), 'update-snooze.json')
+  /** 备源 feed URL：可注入（测试用真实形态的地址），默认是 SPEC §11.1 的占位符。 */
+  const cosUrl = opts.cosUrl ?? DEFAULT_COS_URL
 
   // 两实例独立：同一时刻只存在一个逻辑检查及一个活动下载。
   let githubUpdater = null
   let cosUpdater = null
+  /** 初始化只尝试一次：备源缺省是稳定事实，不必每次检查都重试并重复打日志。 */
+  let instancesReady = false
   let activeSource = null              // 'github' | 'cos'
   let pageState = 'idle'              // 5 态：checking|latest|available|downloading|error
   let revision = 0
@@ -70,36 +96,48 @@ export function createUpdater(opts) {
    * 动态加载 NsisUpdater；v6 必须显式 new，不能用单例 autoUpdater 凑双源。
    */
   async function ensureInstances() {
-    if (githubUpdater && cosUpdater) return
-    const mod = await import('electron-updater')
-    const NsisUpdater = mod.NsisUpdater || mod.default?.NsisUpdater
-    if (!NsisUpdater) throw new Error('NsisUpdater not available in electron-updater')
-
+    if (instancesReady) return
+    instancesReady = true
     const baseOpts = { autoDownload: false, autoInstallOnAppQuit: false, allowPrerelease: false, allowDowngrade: false }
-    githubUpdater = new NsisUpdater({
-      provider: 'github',
-      owner: 'Kk1107k',
-      repo: 'dsh-desktop',
-      ...baseOpts,
-    })
-    githubUpdater.channel = 'stable'
-    // SPEC §7:216：channel 赋值之后必须再明确设一次 —— electron-updater 的 channel setter 会把
-    // allowDowngrade 强制置 true（node_modules/electron-updater/out/AppUpdater.js:44，其文档也
-    // 要求"不需要该行为时请在设置 channel 之后显式覆盖"）。只写在构造 options 里会被它覆盖。
-    githubUpdater.allowDowngrade = false
+    try {
+      const mod = await import('electron-updater')
+      const NsisUpdater = mod.NsisUpdater || mod.default?.NsisUpdater
+      if (!NsisUpdater) {
+        log.error('更新模块不可用：electron-updater 未提供 NsisUpdater，更新功能停用（不影响壳运行）')
+        return
+      }
 
-    cosUpdater = new NsisUpdater({
-      provider: 'generic',
-      url: 'https://<占位 COS 域名>/dsh-desktop',
-      channel: 'cn-stable',
-      ...baseOpts,
-    })
-    cosUpdater.channel = 'cn-stable'
-    // 同上：channel 赋值会把 allowDowngrade 置 true，必须在其后重设（SPEC §7:216）。
-    cosUpdater.allowDowngrade = false
+      // 主源：构造失败只影响主源。
+      try {
+        githubUpdater = new NsisUpdater({ provider: 'github', owner: 'Kk1107k', repo: 'dsh-desktop', ...baseOpts })
+        githubUpdater.channel = 'stable'
+        // SPEC §7:216：channel 赋值之后必须再明确设一次 —— electron-updater 的 channel setter 会把
+        // allowDowngrade 强制置 true（out/AppUpdater.js:44，其文档要求"不需要时在赋 channel 后覆盖"）。
+        githubUpdater.allowDowngrade = false
+        wireEvents(githubUpdater, 'github')
+      } catch (err) {
+        githubUpdater = null
+        log.error('主源初始化失败，更新功能不可用（不影响壳运行）', err instanceof Error ? err.message : String(err))
+      }
 
-    wireEvents(githubUpdater, 'github')
-    wireEvents(cosUpdater, 'cos')
+      // 备源：允许缺省。占位符 URL 不是合法 URL，构造前先判掉，按"备源未配置"处理。
+      if (!isHttpUrl(cosUrl)) {
+        log.warn(`备源未配置：feed URL 不是合法 http(s) 地址（当前 "${cosUrl}"，占位符待填）—— COS 降级不可用，主源失败将直接进入错误态`)
+      } else {
+        try {
+          cosUpdater = new NsisUpdater({ provider: 'generic', url: cosUrl, channel: 'cn-stable', ...baseOpts })
+          cosUpdater.channel = 'cn-stable'
+          cosUpdater.allowDowngrade = false
+          wireEvents(cosUpdater, 'cos')
+        } catch (err) {
+          cosUpdater = null
+          log.error('备源初始化失败，COS 降级不可用', err instanceof Error ? err.message : String(err))
+        }
+      }
+    } catch (err) {
+      // 整体兜底：更新模块的任何初始化异常都不得冒泡（否则 unhandledRejection 会把已就绪的壳带崩）。
+      log.error('更新模块初始化失败，已停用更新（不影响壳运行）', err instanceof Error ? err.message : String(err))
+    }
   }
 
   function wireEvents(instance, source) {
@@ -169,6 +207,12 @@ export function createUpdater(opts) {
     }
 
     await ensureInstances()
+    // 主源都没起来（更新模块缺失/构造失败）：走既有错误态展示，绝不在 null 上继续调用。
+    if (!githubUpdater) {
+      setPageState('error', { message: '更新服务不可用' })
+      opts.onUpdateOpen()
+      return { ok: false, error: { code: 'E_INTERNAL', message: '更新服务不可用' } }
+    }
     setPageState('checking')
     activeSource = 'github'
 
@@ -197,7 +241,8 @@ export function createUpdater(opts) {
     // 晚到或陈旧的失败（检查已结束/已切状态）不再改变状态。
     if (pageState !== 'checking') return
     clearCheckTimer()
-    if (source === 'github' && NETWORK_FAIL_RE.test(String(err?.message || err))) {
+    // 只有备源确实可用时才降级；否则直接落到既有的错误态（"备源未配置"不该表现成崩溃或静默）。
+    if (source === 'github' && cosUpdater && NETWORK_FAIL_RE.test(String(err?.message || err))) {
       activeSource = 'cos'
       setPageState('checking')
       checkTimer = setTimeout(() => {
@@ -270,6 +315,7 @@ export function createUpdater(opts) {
     downloadStartedAt = Date.now()
     lastProgressAt = Date.now()
     const inst = activeSource === 'github' ? githubUpdater : cosUpdater
+    if (!inst) return { ok: false, error: { code: 'E_INVALID_STATE', message: '该更新源未配置' } }
     try {
       await inst.downloadUpdate()
       return { ok: true }
@@ -283,6 +329,11 @@ export function createUpdater(opts) {
   async function tryDownloadCosMirror() {
     // 取消原下载并等待退出，避免并行写入同一缓存。
     try { await githubUpdater?.downloadUpdate?.cancel?.() } catch (_) { /* */ }
+    if (!cosUpdater) {
+      log.warn('镜像续接不可用：备源未配置')
+      setPageState('error', { message: '镜像源未配置' })
+      return
+    }
     try {
       const cosInfo = await cosUpdater.getUpdateMetadata?.() ?? await cosUpdater.checkForUpdates()
       // 校验目标版本、SHA-512、大小一致；不一致报 E_MIRROR_MISMATCH。
@@ -311,6 +362,7 @@ export function createUpdater(opts) {
     try {
       await opts.onHostStopBeforeInstall?.()
       const inst = activeSource === 'github' ? githubUpdater : cosUpdater
+      if (!inst) throw new Error('该更新源未配置')
       // installer 退出由主进程统一 cleanupAndQuit 接管，不在此 quit。
       inst.quitAndInstall()
     } catch (err) {
