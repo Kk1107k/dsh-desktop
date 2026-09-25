@@ -74,7 +74,7 @@ export function hardenLocalPageWindow(win, allowedUrl) {
 /**
  * 创建主窗口控制器。
  * @param {{config:{port:number}, logger:import('./logger.js').Logger, isQuitting?:()=>boolean, isTrayReady?:()=>boolean, onUpdateCloseRequest?:()=>Promise<boolean>}} opts
- * @returns {{win:import('electron').BrowserWindow|null, ensure:()=>boolean, loadURL:(url:string)=>Promise<void>, show:()=>void, openUpdateWindow:()=>void, loaded:boolean, readyToShow:boolean, once:(ev:string,fn:()=>void)=>void}}
+ * @returns {{win:import('electron').BrowserWindow|null, ensure:()=>boolean, loadURL:(url:string)=>Promise<void>, show:()=>void, openUpdateWindow:()=>void, requestUpdateClose:()=>Promise<boolean>, loaded:boolean, readyToShow:boolean, once:(ev:string,fn:()=>void)=>void}}
  */
 export function createMainWindow({ config, logger, isQuitting, isTrayReady, onUpdateCloseRequest }) {
   const log = logger
@@ -184,6 +184,25 @@ export function createMainWindow({ config, logger, isQuitting, isTrayReady, onUp
   create()
 
   /**
+   * **更新窗口关闭判据的唯一入口**（SPEC §7:248：标题栏 X 与页面 `close()` 同语义）。
+   * 两条路径都必须走这里 —— 曾经各写一遍，结果页面那条只调了 M08 的 close() 而从不关窗
+   * （用户可见 bug：终态下点"知道了/重试/关闭"窗口不动）。改这里请保持单一实现。
+   * @returns {Promise<boolean>} true = 已放行并销毁（或本就没有窗口）
+   */
+  async function requestUpdateClose() {
+    const w = updateWin
+    if (!w || w.isDestroyed()) return true
+    let allow = true
+    try {
+      allow = onUpdateCloseRequest ? await onUpdateCloseRequest() : true
+    } catch {
+      allow = false       // 判据异常不得把窗口卡死，也不得误关：按"不允许"处理
+    }
+    if (allow && !w.isDestroyed()) w.destroy()
+    return allow
+  }
+
+  /**
    * 确保主窗口存在：已销毁时重建（SPEC §8 第 1 条）。
    * @returns {boolean} true = 本次发生了重建
    */
@@ -235,15 +254,11 @@ export function createMainWindow({ config, logger, isQuitting, isTrayReady, onUp
     newWin.loadURL('dsh-app://ui/update-dialog.html')
     newWin.once('ready-to-show', () => newWin.show())
     // SPEC §7:248：available 状态下窗口 X 与页面 close() 同语义（都要走 snooze）。
-    // 落盘结果只有 M08 知道，所以这里先拦下、再按注入的回调结果处置：允许才真的销毁。
+    // 关闭判据**只有一处**（requestUpdateClose）：这里拦下 X 后调它，页面按钮经 M09 也调它。
     if (onUpdateCloseRequest) {
       newWin.on('close', (e) => {
         e.preventDefault()
-        void onUpdateCloseRequest().then(allow => {
-          if (allow && !newWin.isDestroyed()) newWin.destroy()
-        }, () => {
-          // 回调异常不得把窗口卡死：按"不允许"处理（保持窗口，用户可重试）。
-        })
+        void requestUpdateClose()
       })
     }
     newWin.on('closed', () => { updateWin = null })
@@ -262,5 +277,5 @@ export function createMainWindow({ config, logger, isQuitting, isTrayReady, onUp
     listeners.get(ev)?.add(fn)
   }
 
-  return { get win() { return win }, ensure, loadURL, show, openUpdateWindow, get loaded() { return self.loaded }, get readyToShow() { return self.readyToShow }, once }
+  return { get win() { return win }, ensure, loadURL, show, openUpdateWindow, requestUpdateClose, get loaded() { return self.loaded }, get readyToShow() { return self.readyToShow }, once }
 }

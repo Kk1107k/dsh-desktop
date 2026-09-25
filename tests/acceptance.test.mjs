@@ -911,6 +911,110 @@ test('A09 更新窗口 X：available 下同按钮语义（先问主进程，只�
   assert.equal(upd.isDestroyed(), true, '允许关闭时才销毁')
 })
 
+/**
+ * 用最小假件执行 src/preload.js 源码（它是 CJS，会被 esbuild 打成 build/preload.cjs）。
+ * @param {{role:string, bootstrap:object}} opts
+ */
+function loadPreload({ role, bootstrap }) {
+  const src = readFileSync(join(root, 'src', 'preload.js'), 'utf8').replace(/\bexport \{\}\s*$/, '')
+  const listeners = new Map()
+  const ipcRenderer = {
+    on(ch, fn) { if (!listeners.has(ch)) listeners.set(ch, []); listeners.get(ch).push(fn) },
+    removeListener() {},
+    invoke(ch) { return Promise.resolve(ch === 'dsh:bridge-ready' ? { ok: true, data: bootstrap } : { ok: true, data: {} }) },
+  }
+  const exposed = {}
+  const contextBridge = { exposeInMainWorld: (ns, api) => { exposed[ns] = api } }
+  // 只注入 require / process：源码自己会 `const { contextBridge, ipcRenderer } = require('electron')`，
+  // 若再把 contextBridge 作为参数传入就会重名（SyntaxError）。
+  const load = new Function('require', 'process', src)
+  load(
+    (name) => { if (name === 'electron') return { contextBridge, ipcRenderer }; throw new Error(`unexpected require: ${name}`) },
+    { argv: [`--dsh-role=${role}`, '--dsh-version=0.1.0'] },
+  )
+  return { exposed, listeners }
+}
+
+test('§5:181 preload 补发：页面注册早于桥返回时也必须拿到状态（无推送）', async () => {
+  const tick = () => new Promise(r => setTimeout(r, 0))
+
+  // update 角色：终态快照只在 bridge-ready 里，此后**不再推送**
+  const upd = loadPreload({ role: 'update', bootstrap: { version: '0.1.0', status: '', finishRequested: false, update: { revision: 7, snapshot: { state: 'latest', version: '0.1.0' } } } })
+  const seen = []
+  upd.exposed.updateAPI.onState((state, data) => seen.push([state, data]))
+  assert.deepEqual(seen, [], '桥未返回时缓存尚空')
+  assert.equal(upd.exposed.updateAPI.getState(), undefined, 'getState() 同步返回 undefined（§5:177）')
+  await tick()
+  assert.equal(seen.length, 1, '桥返回后必须补发一次 —— 否则页面永久停在静态初始 DOM')
+  assert.equal(seen[0][0], 'latest', '补发的就是终态')
+  assert.equal(upd.exposed.updateAPI.getState().state, 'latest', '缓存同步就位')
+
+  // splash 角色：同一条时序窗口（status 与 finish 都可能早于页面注册）
+  const sp = loadPreload({ role: 'splash', bootstrap: { version: '0.1.0', status: '即将就绪…', finishRequested: true, update: null } })
+  const texts = []
+  let finished = 0
+  sp.exposed.splashAPI.onStatus((t) => texts.push(t))
+  sp.exposed.splashAPI.onFinish(() => { finished++ })
+  await tick()
+  assert.deepEqual(texts, ['即将就绪…'], 'status 应补发一次')
+  assert.equal(finished, 1, '早到的转场请求必须补发，否则 splash 收不到 finish')
+})
+
+test('§7:248 更新窗口关闭判据唯一：页面 close() 必须真的销毁窗口，且与 X 同一条路径', async () => {
+  resetElectronStub({})
+  globalThis.__DSH_TEST_WINDOWS__ = []
+  const { createMainWindow } = await import('../src/main-window.js')
+  const { createIpc, CHANNELS } = await import('../src/ipc.js')
+  const { ipcMain } = await import('electron')
+
+  let allow = true
+  let updaterOk = true
+  const mw = createMainWindow({
+    config: { port: 3080 }, logger: fakeLogger(),
+    isQuitting: () => false, isTrayReady: () => true,
+    onUpdateCloseRequest: async () => allow,
+  })
+  const ipc = createIpc({
+    logger: fakeLogger(), getSplash: () => null, getMain: () => null, getGeneration: () => 0,
+    setFinishRequested: () => {}, onSplashFinishConfirm: () => {}, onSplashCloseBeforeFinish: () => {},
+    updater: { close: () => (updaterOk ? { ok: true } : { ok: false, error: { code: 'E_IO', message: '延后写入失败' } }) },
+    tray: () => null,
+    closeUpdateWindow: () => mw.requestUpdateClose(),
+  })
+  ipc.register()
+  const frame = { processArguments: ['--dsh-role=update', '--dsh-version=0.1.0'] }
+  const ev = { sender: { isDestroyed: () => false, getURL: () => 'dsh-app://ui/update-dialog.html', mainFrame: frame }, senderFrame: frame }
+
+  // 成功：必须真的销毁（曾只调 M08 的 close() 而从不关窗）
+  mw.openUpdateWindow()
+  const w1 = globalThis.__DSH_TEST_WINDOWS__.at(-1)
+  const res1 = await ipcMain.handlers.get(CHANNELS.UPDATE_CLOSE)(ev)
+  assert.equal(res1.ok, true)
+  assert.equal(w1.isDestroyed(), true, '页面 close() 必须真正关窗')
+
+  // 延后失败（E_IO）：保持窗口并把错误交回页面，用户可重试
+  updaterOk = false
+  mw.openUpdateWindow()
+  const w2 = globalThis.__DSH_TEST_WINDOWS__.at(-1)
+  const res2 = await ipcMain.handlers.get(CHANNELS.UPDATE_CLOSE)(ev)
+  assert.equal(res2.ok, false)
+  assert.equal(res2.error.code, 'E_IO')
+  assert.equal(w2.isDestroyed(), false, '延后失败必须保留窗口')
+
+  // 判据唯一：X 走的也是同一个 requestUpdateClose（allow=false ⇒ 保留）
+  allow = false
+  const res3 = await mw.requestUpdateClose()
+  assert.equal(res3, false)
+  assert.equal(w2.isDestroyed(), false)
+  ipc.dispose()
+})
+
+test('§8/§9 生产环境移除原生菜单（三窗口一并生效），dev 保留', async () => {
+  const src = readFileSync(join(root, 'src', 'main.js'), 'utf8')
+  assert.match(src, /import \{[^}]*\bMenu\b[^}]*\} from 'electron'/, '应显式 import Menu')
+  assert.match(src, /if \(app\.isPackaged\) Menu\.setApplicationMenu\(null\)/, '打包态应移除应用菜单')
+})
+
 test('§7 备源占位符 URL：初始化不得抛，按"备源未配置"处理（线上 Invalid URL 回归）', async () => {
   globalThis.__DSH_TEST_UPDATER__ = { github: { check: (inst) => { inst.emit('update-not-available', {}) } } }
   const { createUpdater } = await import('../src/updater.js')

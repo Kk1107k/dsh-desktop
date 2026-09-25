@@ -70,6 +70,7 @@ function errMessage(err) { return err instanceof Error ? err.message : String(er
  * @property {string} [lastSplashStatus]
  * @property {boolean} [finishRequested]
  * @property {()=>object|null} tray
+ * @property {()=>Promise<boolean>} [closeUpdateWindow] 请求关闭更新窗口（由 M02 注入，内部走 M06 的唯一判据）
  */
 
 /**
@@ -151,8 +152,13 @@ export function createIpc(deps) {
     ipcMain.handle(CHANNELS.UPDATE_CLOSE, async (event) => {
       try {
         if (!authorize(event, 'update')) return fail('E_FORBIDDEN', 'not update page')
-        const res = updaterRef?.close?.()
-        return res ?? fail('E_IO', 'updater unavailable')
+        // SPEC §7:248：页面 close() 与标题栏 X 同语义。M08 在 available 下把 close() 转成 snooze，
+        // **成功才真正关窗**；失败（E_IO）保持窗口并把错误交回页面，让用户能重试。
+        // 关窗能力由 M02 注入，内部走 M06 的 requestUpdateClose —— 判据只有那一处，不要在这里另写。
+        const res = updaterRef?.close?.() ?? { ok: false, error: { code: 'E_IO', message: 'updater unavailable' } }
+        if (!res.ok) return res
+        await deps.closeUpdateWindow?.()
+        return ok({})
       } catch (err) { return fail('E_IO', errMessage(err)) }
     })
   }

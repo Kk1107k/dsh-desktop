@@ -1,5 +1,5 @@
 // 启动编排唯一入口：所有退出路径必须经 cleanupAndQuit，禁止在别处直接 app.quit。
-import { app, BrowserWindow, dialog, protocol, session } from 'electron'
+import { app, BrowserWindow, dialog, Menu, protocol, session } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, copyFileSync } from 'node:fs'
@@ -234,6 +234,10 @@ async function bootstrap() {
   log = await createLogger()
   global.log = log
 
+  // 移除 Electron 默认菜单（File/Edit/View/Window/Help）：对 splash、更新弹窗这类对话框不合适。
+  // 应用级设置，三个窗口一并生效；dev 保留菜单，便于打开 DevTools。
+  if (app.isPackaged) Menu.setApplicationMenu(null)
+
   // SPEC §9:283：权限默认拒绝，必须在任何窗口加载前装好。
   hardenSession(session.defaultSession)
 
@@ -267,6 +271,8 @@ async function bootstrap() {
     onSplashCloseBeforeFinish: () => onSplashCloseBeforeFinish(),
     updater: null,
     tray: () => state.tray,
+    // SPEC §7:248：页面 close() 与标题栏 X 同语义 —— 两条路径都走 M06 的唯一判据。
+    closeUpdateWindow: () => state.main?.requestUpdateClose?.() ?? Promise.resolve(true),
   })
   state.ipc.register()
 
