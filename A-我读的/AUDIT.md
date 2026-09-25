@@ -161,3 +161,33 @@ updater 层的 `E_IO` 分支是对的（`updater.js:318`），缺口只在页面
 - 但"代码层终审通过"**暂缓**：待 7 条 P1 修复并复核后改判。
 - **今天累计抓获的"静默失效"共 8 例**（onTraySetText / CSP 哈希 ×2 / 文档锚点覆盖 / snooze 不查结果 / allowDowngrade /
   running 徽章未接线 / 渲染崩溃静默）——该形状已成为本项目最重要的质量主题。
+
+---
+
+# 二审修复复核（2026-09-25 15:54）
+
+7 条必修全部落地，审计方逐条独立复核通过（含亲验 `src/updater.js:85-89/97-99` 的
+channel 后重设、`tests/stubs/electron-updater.mjs:37` 复刻 setter 副作用、
+partition 双注册、`hardenSession` 双 session 安装、托盘双输入 derive）。
+独立复跑 43/44（唯一失败 = A10 release.mjs，系本审计环境沙箱拦 `spawnSync` 的已知假象，见 §五）。
+
+| # | commit | 复核要点 |
+|---|---|---|
+| 1 allowDowngrade | `555b7b6` | 两实例均在 `channel=` 之后重设 `allowDowngrade=false`，注释引源码行号；假件复刻 setter 副作用 + 防空转用例（先证明假件会置 true） |
+| 4 running 徽章 | `5c63873` | 托盘拆 `hasUpdate`/`hostHealthy` 双输入 + `derive()`（消灭"后写者胜"）；连带修复"更新结束后永远回不到绿色"（updater 补发 idle） |
+| 9 更新窗口 X | `db58d78` | M06 只拦下等注入裁决；`onUpdateCloseRequest` 返回 ok 才放行，`E_IO` 保留窗口 + 原生提示 |
+| 6 权限默认拒绝 | `44d11c1` | `hardenSession` 双 handler 一律 false；默认与 local 两个 session 均装 |
+| 7 session 分离 | `81db36c` | `LOCAL_PARTITION` 内存 partition；**关键补救：partition 不继承 protocol.handle，单独注册 dsh-app**（漏掉则本地页整页挂）；cookie 换取链路真机确认未隔离（主窗口仍加载 UI） |
+| 8 本地页围栏 | `0beb467` | `hardenLocalPageWindow`：精确放行自身 dsh-app URL + webview 拦截 + openHandler deny（连带清掉 P2 #22） |
+| 5 崩溃提示 | `81aca31` | `render-process-gone` 补 `dialog.showMessageBox`，同窗口只提示一次 |
+
+测试从 38 → **44/44**（新增 6 条，其中含 2 条"假件补全后才成立"的回归防线）。
+真机两组均过：转场完成、CSP 违规 0、托盘徽章轨迹 idle→running、主窗口仍为 UI 标题（#7 专项确认鉴权未被隔离）。
+
+## 终审判定
+
+- **二审 9 条 P1：7 修（全部复核通过）+ 2 缓（#2 降 P2、#3 缓至发布准备期）—— 闭环。**
+- **代码层终审：通过**（§12 验收面 A01~A09 + §3~§10 承诺面 P1 全清）。
+- 遗留为 P2 清单（16 条，已列 §二）与"需真实环境"清单（§三）——不阻塞、择期清理。
+- ⚠️ `dist/` 安装包落后于源码（不含这 7 笔修复），**发布或装机前必须重新构建**（带
+  `ELECTRON_MIRROR` 与 `ELECTRON_BUILDER_BINARIES_MIRROR` 两个环境变量）。
