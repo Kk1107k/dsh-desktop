@@ -693,6 +693,27 @@ test('A09 托盘徽章优先级：update > running > idle（host 健康显绿，
   assert.match(icon(), /^tray\.png$/, 'host 失联/停止应回落 idle（SPEC §6:203）')
 })
 
+test('§4:134 主窗口渲染进程崩溃 → 原生错误提示（禁止静默），且同一窗口只提示一次', async () => {
+  resetElectronStub({})
+  globalThis.__DSH_TEST_WINDOWS__ = []
+  const { createMainWindow } = await import('../src/main-window.js')
+  const { dialog } = await import('electron')
+  dialog.calls = []
+  const mw = createMainWindow({ config: { port: 3080 }, logger: fakeLogger(), isQuitting: () => false, isTrayReady: () => true })
+  const w = globalThis.__DSH_TEST_WINDOWS__.at(-1)
+  const tick = () => new Promise(r => setTimeout(r, 0))
+
+  w.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 })
+  await tick()
+  assert.equal(dialog.calls.length, 1, '崩溃必须弹原生提示 —— 注释写了"禁止静默隐藏"，代码也必须做')
+  assert.match(String(dialog.calls[0][0]?.message ?? ''), /界面进程异常退出/, '提示应说明界面异常退出')
+  assert.match(String(dialog.calls[0][0]?.detail ?? ''), /crashed/, '提示应带上崩溃原因')
+
+  w.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 })
+  await tick()
+  assert.equal(dialog.calls.length, 1, '同一窗口只提示一次，避免崩溃循环弹成串')
+})
+
 test('§9:281/282 本地页围栏：只许停留自己的页面、禁开新窗、禁 webview', async () => {
   resetElectronStub({})
   globalThis.__DSH_TEST_WINDOWS__ = []

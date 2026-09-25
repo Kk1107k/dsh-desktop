@@ -103,7 +103,11 @@ export const session = {
     return this._partitions.get(key)
   },
 }
-export const dialog = { showMessageBox: async () => ({ response: 0 }) }
+/** dialog 假件：记录调用参数（calls），供"必须弹原生提示"这类断言使用。 */
+export const dialog = {
+  calls: [],
+  showMessageBox: async (...args) => { dialog.calls.push(args); return { response: 0 } },
+}
 export const shell = { openExternal: async () => {} }
 
 /** Tray 假件：记录调用与传入的图标；实例经 globalThis.__DSH_TEST_TRAYS__ 暴露。 */

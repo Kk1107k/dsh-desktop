@@ -1,6 +1,6 @@
 // 主窗口与受信本地页窗口的创建、安全策略与导航限制。
 // 主窗口不挂桌面 preload；上游页面不得获得任何壳桥。
-import { app, BrowserWindow, shell, session } from 'electron'
+import { app, BrowserWindow, dialog, shell, session } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -86,6 +86,8 @@ export function createMainWindow({ config, logger, isQuitting, isTrayReady, onUp
    * @param {boolean} [rebuilt] 是否为重建（销毁后由托盘唤回），重建时页面就绪即显示。
    */
   function create(rebuilt = false) {
+    /** 崩溃提示只弹一次（按窗口实例计）。 */
+    let crashPrompted = false
     /** @type {import('electron').BrowserWindow} */
     const w = new BrowserWindow({
       width: 1280, height: 800, minWidth: 960, minHeight: 640,
@@ -165,7 +167,16 @@ export function createMainWindow({ config, logger, isQuitting, isTrayReady, onUp
     })
     w.webContents.on('render-process-gone', (_e, details) => {
       log.error('renderer gone', details)
-      // 显示原生错误提示，禁止静默隐藏。
+      // SPEC §4:134：渲染进程崩溃必须显示原生错误提示，禁止静默隐藏。
+      // 同一窗口只提示一次，避免崩溃循环里弹出成串对话框。
+      if (crashPrompted) return
+      crashPrompted = true
+      void dialog.showMessageBox({
+        type: 'error',
+        title: 'DSH Desktop',
+        message: '界面进程异常退出。',
+        detail: `原因：${String(details?.reason ?? 'unknown')}。请关闭本窗口后重新打开。`,
+      })
     })
     w.on('closed', () => { if (win === w) win = null })
   }
