@@ -294,3 +294,68 @@ partition 双注册、假件复刻 setter 副作用、托盘双输入 derive 等
 > `main-window.js:168-173/234`、`main.js:165-168/332-333`）、
 > 收尾阶段的 asar 标志串独立核验，以及三次自主复跑测试（36→44→45 条）。
 > **P0 = 0、P1 = 0**；16 条 P2 登记不阻塞；剩余均需真实环境（见前节）。
+
+---
+
+# 四审 · 装包实测轮（2026-09-25 17:26 · 审计方核验）
+
+## 一、真机装机首跑：抓出 3 个 mock 测不出的缺陷
+
+`dist/DSH Desktop-Setup-0.1.0.exe` 首次安装启动即失败（弹"服务启动失败"）。日志因果链：
+
+```
+16:49:52 spawning host gen=0 port=3080
+16:49:54 host ready line parsed port=3080 token=<redacted>   ← 第一次启动其实是成功的
+16:49:55 主窗口 ready-to-show 到达
+16:49:55 [error] unhandledRejection Invalid URL               ← 真正崩溃点
+           at new URL → newBaseUrl (electron-updater/out/util.js:10)
+           → new GenericProvider → NsisUpdater.setFeedURL → ensureInstances (src/updater.js:91)
+16:49:55 [error] main window load failed ERR_FAILED (-2)      ← 已就绪的 host 被主动杀掉
+16:50:10 / 16:50:36 E_PORT_IN_USE                              ← 两次重试均失败（残留占 3080）
+```
+
+| # | 缺陷 | 性质 |
+|---|---|---|
+| P0-A | `url: 'https://<占位 COS 域名>/dsh-desktop'` 含尖括号 → `new URL()` 抛错；`ensureInstances()` 无条件构造两实例 ⇒ 备源必崩 | 占位符是 §11.1 允许的待填形态 → **代码必须容忍它** |
+| P0-B | 更新模块构造失败 → `unhandledRejection` → `cleanupAndQuit()` + `app.exit(1)` → **杀掉已就绪的 host**、主窗口 ERR_FAILED | 一个"更新源没配好"换来"应用完全不可用"，代价比例不可接受 |
+| P1-C | 重试时上次残留的 dsh 孙进程仍占 3080 → `E_PORT_IN_USE`，**永不自愈** | 崩溃后无法恢复 |
+
+> ⚠️ **审计方漏判（记入本案）**：审计方此前只核了"占位符是否存在 / 与 SPEC 字面量是否一致"，
+> **未核"占位符会不会导致运行时崩溃"**。静态核对只看得见字面量，看不见运行时后果。
+> 此为 SPEC §12 那句警告的实证：涉及真实 host、安装、签名及更新下载的用例必须在目标
+> Windows 环境通过后才能标记发布完成 —— **mock 45/45 全绿，装机第一次就崩。**
+
+## 二、修复独立核验
+
+| 修复 | 复核证据 | 结果 |
+|---|---|---|
+| P0-A 占位符容忍 | `updater.js:26` `isHttpUrl()`；`:123-125` 备源判空并 `log.warn('备源未配置…')`；逐源 try/catch；COS 各调用点加 null 守卫 | ✅ |
+| P0-B 分级处置 | `main.js:205-211` `isRecoverableRejection()`：显式 `err.recoverable` 优先 + 调用栈落点（updater / electron-updater）兜底；核心链路仍受控退出 | ✅ |
+| P1-C 端口自愈 | `dsh-host.js:175-187` 身份材料（创建时间 ticks + 命令行）；`:205/218-220` 记录含 `ticks`/`cmdSha256`；`:422-432` 三重判据（记录过 + 当前确为占用者 + 身份一致）全部满足才回收；`:444-448` 回收后复查端口最多 3s | ✅ 与 CC 自述一致 |
+| 真机证据 | 装包后日志：`备源未配置…` warn（未崩）→ `gate: hostHealthy=true mainLoaded=true readyToShow=true elapsed=5058`；自愈实测：`端口 3080 被上次残留的本壳进程占用（PID=22228），按身份核对后回收其进程树` → 重启成功、`E_PORT_IN_USE 次数: 0` | ✅ |
+| 测试 | **48/48**（新增 3 条：占位符容忍 / 更新模块失败不影响 host / 端口自愈三重判据） | ✅ 本机 46/48（两条失败同源，见 §四） |
+
+## 三、本轮新发现（小项，待清）
+
+**`dsh-host.js:413-418` 的 JSDoc 仍在描述被废弃的方案**：第 418 行写"身份核对：其命令行里含本壳固定的包名 pin"，
+而实现（`:426-432`）已改为 `ticks` + `cmdSha256` 身份核对。
+CC 自述首版用包名 pin 是错的（孙进程命令行不含该 pin，永远核不上），已修代码但**注释未同步**。
+**这是安全边界相关注释**（SPEC §6"只杀按 PID 树核对过的自己人"的唯一说明处），
+后人照注释实现会退回已证伪的方案 ⇒ **应修**。
+
+## 四、审计环境声明（更新）
+
+本机复跑 **46/48**，两条失败**同源**且均为环境假象：
+
+| 失败项 | 原因 |
+|---|---|
+| #7 §6 端口残留自愈 | 用例经 `spawnSync` 调系统进程查询工具取进程身份 → 本沙箱 spawnSync 返回 `EBUSY` → 结果为 null |
+| #48 A10 release.mjs | 用例经 `spawnSync(node)` 跑 release.mjs → 同上 |
+
+两者根因一致（本审计沙箱拦 `spawnSync`，已用最小实验确证），**不构成代码缺陷**；目标环境 48/48。
+
+## 五、改判
+
+> **真实环境轮次：通过**（首次安装启动 + 端口自愈均实测通过）。
+> 累计：**代码层 P0=0 / P1=0**；真机轮次已抓出并修复 3 个 mock 盲区缺陷。
+> 仍需：托盘与 UI 肉眼确认、卸载流程、更新成功路径（需 COS 域名）、§三 的注释漂移清理。
