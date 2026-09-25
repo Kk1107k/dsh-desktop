@@ -1,11 +1,17 @@
 // 托盘生命周期与菜单；调用注入的业务函数，不自行注册 IPC。
 import { Tray, Menu, nativeImage, app } from 'electron'
-import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+/** 包内素材根目录：按模块位置解析，不依赖进程工作目录（安装后 cwd 任意）。 */
+const ASSETS_DIR = join(__dirname, '..', 'assets')
 
 const STATE_ICON = {
-  idle: 'assets/tray.png',
-  update: 'assets/tray-update.png',
-  running: 'assets/tray-running.png',
+  idle: 'tray.png',
+  update: 'tray-update.png',
+  running: 'tray-running.png',
 }
 
 /**
@@ -17,9 +23,9 @@ export function createTray({ logger, onOpen, onCheckUpdate, getRunMode, setRunMo
   /** @type {'idle'|'update'|'running'} */ let currentState = 'idle'
   /** @type {NodeJS.Timeout|null} */ let flashTimer = null
 
-  const iconIdle = nativeImage.createFromPath(join(process.cwd(), 'assets', 'tray.png'))
-  const iconUpdate = nativeImage.createFromPath(join(process.cwd(), 'assets', 'tray-update.png'))
-  const iconRunning = nativeImage.createFromPath(join(process.cwd(), 'assets', 'tray-running.png'))
+  const iconIdle = nativeImage.createFromPath(join(ASSETS_DIR, STATE_ICON.idle))
+  const iconUpdate = nativeImage.createFromPath(join(ASSETS_DIR, STATE_ICON.update))
+  const iconRunning = nativeImage.createFromPath(join(ASSETS_DIR, STATE_ICON.running))
 
   tray = new Tray(iconIdle)
   tray.setToolTip('DSH Desktop')
