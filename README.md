@@ -76,7 +76,7 @@ python tools/gen_update_dialog.py   # src/update-dialog.html
 ## 环境要求
 
 Node ≥ 22（系统级、外部可见，供壳查找 `npx-cli.js`）、pnpm ≥ 9、**Electron ≥ 36**（内置 Node 22）。
-Windows 10/11 x64；全局缓存目录需可读写以访问 `@deepseek-ai/dsh@0.1.7-alpha`。
+Windows 10/11 x64；全局缓存目录需可读写以访问 `@deepseek-ai/dsh@0.1.7-alpha.2`。
 
 ## 安装与开发
 
@@ -90,6 +90,20 @@ pnpm dev
 
 `build` 顺序固定：`build:preload → typecheck → test → electron-builder --win nsis --x64 --publish never`，
 全部发布产物进入 `dist/`。
+
+> ⚠ **国内网络打包前必须设镜像环境变量**：`electron-builder` 要下载它自己的构建二进制
+> （winCodeSign / NSIS / 7zip），默认走 GitHub，国内会 `connect ETIMEDOUT 20.205.243.166:443`。
+> 注意 `.npmrc` 里的 `electron_builder_binaries_mirror` **electron-builder 不读**，只认同名环境变量：
+>
+> ```bash
+> # Git Bash
+> ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ pnpm build
+> ```
+> ```powershell
+> # PowerShell
+> $env:ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"; pnpm build
+> ```
+> 境外网络可不设（走官方源）。
 
 ## 双通道更新
 
