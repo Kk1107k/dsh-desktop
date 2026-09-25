@@ -1093,6 +1093,57 @@ test('§8/§9 生产环境移除原生菜单（三窗口一并生效），dev �
   assert.match(src, /if \(app\.isPackaged\) Menu\.setApplicationMenu\(null\)/, '打包态应移除应用菜单')
 })
 
+test('A05 终态复位：连续两次检查都能开始（第二次不得 E_BUSY）', async () => {
+  globalThis.__DSH_TEST_UPDATER__ = { github: { check: (inst) => { inst.emit('update-not-available', {}) } } }
+  const { up, d } = await makeUpdater()
+  const r1 = await up.checkOnce({ manual: true })
+  assert.equal(r1.ok, true)
+  await waitUntil(() => d.states.some(s => s.snapshot.state === 'latest'))
+  const r2 = await up.checkOnce({ manual: true })
+  assert.equal(r2.ok, true, `首检进终态后必须复位在飞标志（实际：${JSON.stringify(r2)}）`)
+  up.dispose()
+})
+
+test('A05 终态复位：超时→降级走到 error 后，手动检查能重新开始', async () => {
+  globalThis.__DSH_TEST_UPDATER__ = {
+    github: { check: (inst) => { inst.emit('error', new Error('ETIMEDOUT')) } },
+    cos: { check: (inst) => { inst.emit('error', new Error('ECONNRESET')) } },
+  }
+  const { up, d } = await makeUpdater()
+  await up.checkOnce({ manual: true })
+  await waitUntil(() => d.states.some(s => s.snapshot.state === 'error'))
+  const again = await up.checkManual()
+  assert.equal(again.ok, true, '终态之后必须能重新开始')
+  up.dispose()
+})
+
+test('A05 手动检查被拒必须有托盘可见反馈（E_BUSY / 开发态都不得静默）', async () => {
+  // 在飞：fake 的 check 不发任何事件 ⇒ 状态停在 checking
+  globalThis.__DSH_TEST_UPDATER__ = { github: { check: () => { /* 保持 checking，模拟仍在飞 */ } } }
+  const { up, d } = await makeUpdater()
+  const first = await up.checkManual()
+  assert.equal(first.ok, true, '首检应能开始')
+  d.flashes.length = 0
+  const second = await up.checkManual()
+  assert.equal(second.ok, false)
+  assert.equal(second.error.code, 'E_BUSY')
+  assert.ok(d.flashes.length > 0, 'E_BUSY 必须给托盘文字反馈 —— 点了没反应是最难查的故障形态')
+  assert.match(String(d.flashes.at(-1)?.[0] ?? ''), /正在检查/, `反馈文案应说明正在检查：${JSON.stringify(d.flashes)}`)
+  up.dispose()
+
+  // 开发态被拒：同样不得静默
+  const { deps, d: d2 } = updaterDeps()
+  deps.isPackaged = false
+  const { createUpdater } = await import('../src/updater.js')
+  const up2 = createUpdater(deps)
+  const devRes = await up2.checkManual()
+  assert.equal(devRes.ok, false)
+  assert.equal(devRes.error.code, 'E_UNPACKAGED')
+  assert.ok(d2.flashes.length > 0, '开发态被拒也要给托盘反馈')
+  assert.match(String(d2.flashes.at(-1)?.[0] ?? ''), /开发态/, '文案应说明开发态不执行更新')
+  up2.dispose()
+})
+
 test('§7 备源占位符 URL：初始化不得抛，按"备源未配置"处理（线上 Invalid URL 回归）', async () => {
   globalThis.__DSH_TEST_UPDATER__ = { github: { check: (inst) => { inst.emit('update-not-available', {}) } } }
   const { createUpdater } = await import('../src/updater.js')

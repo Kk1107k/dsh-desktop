@@ -341,7 +341,9 @@ async function bootstrap() {
   state.tray = createTray({
     logger: log,
     onOpen: () => { void reopenMainWindow() },
-    onCheckUpdate: () => state.updater.checkManual(),
+    // 手动检查的可见反馈由 M08 内部给出（E_BUSY/E_UNPACKAGED 都会闪文字）；这里只兜住拒绝，
+    // 避免一个未处理的 Promise 触发 unhandledRejection。
+    onCheckUpdate: () => { void state.updater.checkManual().catch(err => log.error('手动检查失败', err)) },
     getRunMode: () => state.config.runMode,
     setRunMode: (mode) => persistRunMode(mode),
     onQuit: () => cleanupAndQuit(),

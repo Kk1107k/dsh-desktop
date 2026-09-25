@@ -155,6 +155,13 @@ export function createUpdater(opts) {
    */
   function setPageState(next, data) {
     pageState = next
+    // 终态复位：离开 checking 即清空在飞标志（latest / available / downloading / error / idle 都算），
+    // 因为"检查在飞"只可能发生在 checking 期间。
+    // ⚠ **复位判据只有这一处**，不要在各条 failSource / 事件回调里各写一遍 —— 本 bug 的成因正是
+    //   "只在 dispose() 里复位、路径分散漏了一条"：首检进终态后 inflight 永久非空，
+    //   此后所有检查（手动与 6h 自动）都被 E_BUSY 拒掉。
+    // ⚠ checking → checking（切源降级）不得复位。
+    if (next !== 'checking') inflight = null
     revision++
     const ev = { revision, snapshot: buildSnapshot(next, data) }
     snapshot = ev.snapshot
@@ -197,7 +204,12 @@ export function createUpdater(opts) {
    * @returns {Promise<{ok:boolean, error?:{code:string,message:string}}>}
    */
   async function checkOnce({ manual = false } = {}) {
-    if (inflight) return { ok: false, error: { code: 'E_BUSY', message: '已有检查进行中' } }
+    if (inflight) {
+      // 理论上不该发生：进入终态时已在 setPageState 里复位。命中即说明有路径漏了复位，
+      // 留警告而不是静默 E_BUSY —— 这类"只有加没有解"的标志位故障几乎不可观测。
+      log.warn(`检查被拒（E_BUSY）：仍在飞但页面状态已是 ${pageState}，疑有路径漏复位 inflight`)
+      return { ok: false, error: { code: 'E_BUSY', message: '已有检查进行中' } }
+    }
     if (!isPackaged) return { ok: false, error: { code: 'E_UNPACKAGED', message: '开发态不执行真实更新' } }
 
     const snoozeUntil = loadSnooze(snoozePath)
@@ -223,12 +235,14 @@ export function createUpdater(opts) {
         failSource('github', new Error('timeout'))
       }
     }, CHECK_DEADLINE_MS)
-    inflight = new Promise((resolve) => {
-      githubUpdater.checkForUpdates().then(() => { /* events 驱动 resolve */ }).catch(err => {
-        failSource('github', err).then(resolve)
-      })
-      // 由事件回调解析 inflight
-    })
+    // 先把在飞标志建好、再发起请求：checkForUpdates 可能在返回前就同步派发事件
+    // （测试夹具正是同步 emit），那时终态复位会先跑、再被这里的赋值冲掉 —— 标志就永久卡住了。
+    /** @type {(v?:unknown)=>void} */
+    let settleInflight = () => {}
+    inflight = new Promise((resolve) => { settleInflight = resolve })
+    githubUpdater.checkForUpdates()
+      .then(() => { /* 正常路径由事件回调驱动状态机，标志在进入终态时复位 */ })
+      .catch(err => { failSource('github', err).then(() => settleInflight()) })
     return { ok: true }
   }
 
@@ -389,8 +403,20 @@ export function createUpdater(opts) {
     return { ok: true }
   }
 
-  function checkManual() {
-    return checkOnce({ manual: true })
+  /**
+   * 手动检查（托盘「检查更新…」）。**不得静默**：被拒时给托盘一条文字反馈，
+   * 否则用户点了没有任何反应、也无从判断是"没在检查"还是"被拒了"。
+   * @returns {Promise<{ok:boolean, error?:{code:string,message:string}}>}
+   */
+  async function checkManual() {
+    const res = await checkOnce({ manual: true })
+    if (!res.ok) {
+      const msg = res.error?.code === 'E_BUSY' ? '正在检查中…'
+        : res.error?.code === 'E_UNPACKAGED' ? '开发态不执行更新'
+          : '更新检查失败'
+      opts.onTraySetText?.(msg, 5000)
+    }
+    return res
   }
 
   function scheduleOnMainWindowReady() {
