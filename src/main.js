@@ -3,9 +3,10 @@ import { app, BrowserWindow, dialog, net, protocol, session } from 'electron'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, copyFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { createLogger } from './logger.js'
 import { createDshHost } from './dsh-host.js'
-import { createMainWindow } from './main-window.js'
+import { createMainWindow, LOCAL_PAGE_CSP } from './main-window.js'
 import { createTray } from './tray.js'
 import { createUpdater } from './updater.js'
 import { createIpc, CHANNELS } from './ipc.js'
@@ -19,6 +20,8 @@ const SPEC_FADE_MS = 300
 const SPEC_FINISH_TIMEOUT_MS = 1000
 const SPEC_HOST_READY_TIMEOUT_MS = 15000
 const SPEC_MAIN_LOAD_TIMEOUT_MS = 10000
+/** D2 兜底：did-finish-load 后仍未 ready-to-show 时，等这么久就把主窗口显示出来推进转场。 */
+const SPEC_READY_FALLBACK_MS = 800
 
 /**
  * 装载并校验用户配置；损坏文件留 .corrupt 副本后恢复默认。
@@ -83,6 +86,44 @@ function registerDshAppProtocol() {
  * @param {Request} request
  * @returns {Promise<Response>}
  */
+/** 页面 inline script 哈希缓存（按绝对路径）。 */
+const inlineHashCache = new Map()
+
+/**
+ * 取页面内所有 inline `<script>` 的 CSP 哈希源（已带单引号），供 script-src 使用。
+ * 两个必须踩准的点：
+ *   1. HTML 解析器会把输入流的 CRLF/CR 规范化为 LF，浏览器取哈希用的是规范化后的文本
+ *      （生成产物是 CRLF）—— 不规范化则哈希永不匹配，脚本被自己的 CSP 拦住；
+ *   2. CSP 的哈希源必须带单引号，裸串会被 Chromium 判为 "invalid source" 整条忽略。
+ * @param {string} absPath
+ * @returns {string[]} 形如 `'sha256-<base64>'`
+ */
+function inlineScriptHashes(absPath) {
+  const cached = inlineHashCache.get(absPath)
+  if (cached) return cached
+  const html = readFileSync(absPath, 'utf8')
+  /** @type {string[]} */
+  const hashes = []
+  const re = /<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi
+  let m
+  while ((m = re.exec(html)) !== null) {
+    if (!m[1]) continue
+    const text = m[1].replace(/\r\n?/g, '\n')
+    hashes.push(`'sha256-${createHash('sha256').update(text, 'utf8').digest('base64')}'`)
+  }
+  inlineHashCache.set(absPath, hashes)
+  return hashes
+}
+
+/**
+ * dsh-app 请求处理器：仅放行白名单页面，并拒绝任何越出 __dirname 的路径。
+ * 注意：protocol.handle 只传 request 且要求返回 Response；旧版 registerFileProtocol 的
+ * (request, callback) 形态会让 callback 为 undefined（TypeError: callback is not a function，
+ * 表现为 splash 以 ERR_UNEXPECTED 加载失败）。文件经 net.fetch 读取以保留 MIME 与流式。
+ * 响应上附加本地页 CSP（SPEC §9：协议响应同时携带同一 CSP，script-src 用实际脚本哈希）。
+ * @param {Request} request
+ * @returns {Promise<Response>}
+ */
 async function handleDshAppRequest(request) {
   const url = new URL(request.url)
   if (url.host !== 'ui') return new Response('not found', { status: 404 })
@@ -92,7 +133,10 @@ async function handleDshAppRequest(request) {
   const safe = join(__dirname, rel).replace(/\\/g, '/').replace(/\/{2,}/g, '/')
   const base = __dirname.replace(/\\/g, '/').replace(/\/$/, '')
   if (!safe.startsWith(base + '/')) return new Response('forbidden', { status: 403 })
-  return net.fetch(pathToFileURL(safe).toString())
+  const res = await net.fetch(pathToFileURL(safe).toString())
+  const headers = new Headers(res.headers)
+  headers.set('Content-Security-Policy', LOCAL_PAGE_CSP(inlineScriptHashes(safe)))
+  return new Response(res.body, { status: res.status, headers })
 }
 
 app.enableSandbox()
@@ -192,6 +236,20 @@ async function bootstrap() {
     if (state.quitting) return
     scheduleFinalGate()
     state.updater.scheduleOnMainWindowReady()
+  })
+
+  // D2 兜底（SPEC §11.1 登记为"主判据不变、增加兜底路径"）：实测 ready-to-show 在隐藏窗口上
+  // 会因 GPU/驱动组合抖动而不到（4 次里 3 次缺），单靠它会把转场永久卡死。
+  // did-finish-load 已到但 ready-to-show 未到时，先把主窗口显示出来让首帧得以绘制。
+  // 窗口已设 backgroundColor:#0f1419，不会白闪；且早于 2400ms 门控，用户看不到差别。
+  state.main.once('loaded', () => {
+    setTimeout(() => {
+      if (state.quitting) return
+      if (!state.main?.win || state.main.win.isDestroyed()) return
+      if (state.main.readyToShow) return
+      log.warn('ready-to-show 未到，按 did-finish-load 兜底显示')
+      state.main.show()
+    }, SPEC_READY_FALLBACK_MS)
   })
 
   state.tray = createTray({

@@ -8,17 +8,16 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
 /**
- * 策略文本。`allowEval` 只对上游 UI（loopback origin）开：
- * 上游 bundle 用 `new Function` 动态求值，脚本源缺 'unsafe-eval' 会抛
- * `EvalError: Refused to evaluate a string as JavaScript`，SPA 起不来 → 白屏。
- * 这是上游强制的放宽，不是壳主动降低标准；登记见 SPEC §11.1。
+ * host（上游 UI，loopback origin）策略。
+ * script-src 的 'unsafe-eval' 是上游强制的放宽：其 bundle 用 `new Function` 动态求值，
+ * 缺它会抛 `EvalError: Refused to evaluate a string as JavaScript`，SPA 起不来 → 白屏。
+ * 不是壳主动降低标准；登记见 SPEC §11.1。
  * @param {number} port
- * @param {boolean} allowEval
  * @returns {string}
  */
-const buildCsp = (port, allowEval) => [
+const HOST_CSP = (port) => [
   "default-src 'self'",
-  `script-src 'self' 'unsafe-inline'${allowEval ? " 'unsafe-eval'" : ''}`,
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
@@ -29,14 +28,24 @@ const buildCsp = (port, allowEval) => [
   "frame-ancestors 'none'",
 ].join('; ')
 
-/** host（上游 UI）策略。 */
-const HOST_CSP = (port) => buildCsp(port, true)
 /**
- * 非 host origin（壳自己的 dsh-app:// 页面：splash / update-dialog / about）策略。
- * 与加 'unsafe-eval' 之前逐字一致：这些页面的脚本是我们自己写的，不需要也不允许 eval
- * （SPEC §9：本地页面禁止为通过测试加入 unsafe-eval）。
+ * 壳自己的页面（`dsh-app://`：splash / update-dialog / about）策略，逐字对齐 SPEC §9。
+ * script-src 只认包内**实际 inline script** 的 SHA-256，不用 'unsafe-inline'
+ * （本地脚本是我们自己的，不需要也不允许 eval）。
+ * @param {string[]} hashes 形如 `sha256-<base64>`
+ * @returns {string}
  */
-const LOCAL_CSP = (port) => buildCsp(port, false)
+export const LOCAL_PAGE_CSP = (hashes) => [
+  "default-src 'self'",
+  ['script-src', "'self'", ...hashes].join(' '),
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "font-src 'self' data:",
+  "connect-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "frame-ancestors 'none'",
+].join('; ')
 
 /**
  * 创建主窗口控制器。
@@ -90,6 +99,9 @@ export function createMainWindow({ config, logger, isQuitting, isTrayReady }) {
     // host session 安装统一的 onHeadersReceived；不关闭 webSecurity，不忽略证书错误。
     const hostSession = w.webContents.session
     hostSession.webRequest.onHeadersReceived((details, cb) => {
+      // 只管上游 UI。壳自己的 dsh-app:// 页面由协议响应自带 CSP（SPEC §9 要求
+      // "协议响应同时携带同一 CSP，禁止依赖页面伪造值"），这里再插一手只会造成双重策略。
+      if (!details.url.startsWith(`http://127.0.0.1:${config.port}/`)) return cb({})
       const res = { responseHeaders: { ...details.responseHeaders } }
       // SPEC §9：上游自带的 CSP 保留并与壳策略共同生效（多重 CSP 为合取，更严格者胜出）。
       // 实测 0.1.7-alpha.2 不发 CSP（见 §11.1），故此处通常为空。
@@ -101,9 +113,7 @@ export function createMainWindow({ config, logger, isQuitting, isTrayReady }) {
           delete res.responseHeaders[key]
         }
       }
-      // 只按 origin 放宽：上游 UI 用 HOST_CSP（含 'unsafe-eval'），壳自己的页面保持原策略。
-      const isHostOrigin = details.url.startsWith(`http://127.0.0.1:${config.port}/`)
-      res.responseHeaders['Content-Security-Policy'] = [...upstream, isHostOrigin ? HOST_CSP(config.port) : LOCAL_CSP(config.port)]
+      res.responseHeaders['Content-Security-Policy'] = [...upstream, HOST_CSP(config.port)]
       cb(res)
     })
 
@@ -123,7 +133,7 @@ export function createMainWindow({ config, logger, isQuitting, isTrayReady }) {
       // 重建场景：页面就绪即显示，避免用户点了托盘却什么都没出现。
       if (rebuilt && !w.isDestroyed()) { w.show(); w.focus() }
     })
-    w.webContents.on('did-finish-load', () => { self.loaded = true })
+    w.webContents.on('did-finish-load', () => { self.loaded = true; self.emit?.('loaded') })
     w.webContents.on('render-process-gone', (_e, details) => {
       log.error('renderer gone', details)
       // 显示原生错误提示，禁止静默隐藏。
