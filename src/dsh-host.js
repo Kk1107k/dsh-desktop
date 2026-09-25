@@ -357,8 +357,9 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
     }
 
     const { nodeExe, npxCli } = locate()
-    const args = [npxCli, '--yes', '--offline', `--package=${TARGET_PKG}`, '--', 'dsh', 'web', '--no-open']
-    const env = { ...process.env, DSH_NO_BROWSER: '1', DSH_PORT: String(config.port), ELECTRON_RUN_AS_NODE: '0' }
+    // 端口用上游公开开关 --port 传入：实测 DSH_PORT 环境变量被忽略（见 SPEC §11.1 #2）。
+    const args = [npxCli, '--yes', '--offline', `--package=${TARGET_PKG}`, '--', 'dsh', 'web', '--no-open', '--port', String(config.port)]
+    const env = { ...process.env, DSH_NO_BROWSER: '1', ELECTRON_RUN_AS_NODE: '0' }
     log.info(`spawning host gen=${generation} port=${config.port}`)
 
     child = spawn(nodeExe, args, {

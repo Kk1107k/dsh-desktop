@@ -10,7 +10,12 @@ import { join } from 'node:path'
 
 const stateDir = process.env.FAKE_STATE_DIR
 const mode = process.env.FAKE_MODE || 'serve'
-const port = Number(process.env.DSH_PORT || 3080)
+// 对齐上游：端口经命令行 --port 传入（DSH_PORT 环境变量对上游无效，壳侧已不再使用）。
+const argPort = (() => {
+  const i = process.argv.indexOf('--port')
+  return i >= 0 ? Number(process.argv[i + 1]) : undefined
+})()
+const port = Number(argPort ?? process.env.DSH_PORT ?? 3080)
 const dieTimes = Number(process.env.FAKE_DIE_TIMES || 0)
 /** 夹具固定假 token：dsh-host 只从 stdout 就绪行实读，不参与任何真实鉴权。 */
 const FAKE_TOKEN = 'fake-token-0123456789ABCDEF'

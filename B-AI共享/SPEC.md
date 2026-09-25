@@ -188,8 +188,8 @@ npx @deepseek-ai/dsh web --no-open
 ```
 目标版本固定为 `@deepseek-ai/dsh@0.1.7-alpha`；运行前检查外部 Node ≥22、npm/npx 及该版本的缓存；缺失则报 `E_RUNTIME_MISSING` 或 `E_CLI_MISSING` 并提示准备环境。（已被 §11.1 修订：上游从未发布 `0.1.7-alpha`，实取 `0.1.7-alpha.2`。）
 Windows 不以 `shell:false` 直接执行 `npx.cmd`，也不拼接 `cmd /c` 命令；定位外部 Node 安装对应的 `node.exe` 与 `npx-cli.js`，传绝对路径。
-实际调用为 `spawn(nodeExe, [npxCli, "--yes", "--offline", "--package=@deepseek-ai/dsh@0.1.7-alpha", "--", "dsh", "web", "--no-open"], options)`；此映射的兼容性按 §11.1 验证。
-环境覆盖为 `{ ...process.env, DSH_NO_BROWSER: "1", DSH_PORT: String(config.port), ELECTRON_RUN_AS_NODE: "0" }`；默认端口为 3080。
+实际调用为 `spawn(nodeExe, [npxCli, "--yes", "--offline", "--package=@deepseek-ai/dsh@0.1.7-alpha", "--", "dsh", "web", "--no-open"], options)`；此映射的兼容性按 §11.1 验证。（已被 §11.1 修订：版本取 `0.1.7-alpha.2`，args 结尾追加 `"--port", String(config.port)`。）
+环境覆盖为 `{ ...process.env, DSH_NO_BROWSER: "1", DSH_PORT: String(config.port), ELECTRON_RUN_AS_NODE: "0" }`；默认端口为 3080。（已被 §11.1 修订：`DSH_PORT` 实测对上游无效，已移除；端口改经 `--port` 传入。）
 该环境仅传给外部 Node；禁止把 `process.execPath` 当作 Node。`ELECTRON_RUN_AS_NODE` 的非空值不得被当成 Electron 的可靠“关闭开关”。
 `options` 固定 `shell:false`、`windowsHide:true`、`detached:false`、`stdio:["ignore","pipe","pipe"]`；工作目录为已创建的用户工作目录；保存启动代次及进程身份。
 启动前检查 `127.0.0.1:<port>` 是否已被占用；占用时返回 `E_PORT_IN_USE`，不接管现有服务、不杀占用者、不静默更换端口。
@@ -385,6 +385,9 @@ COS 安装包和 blockmap 上传到 `/dsh-desktop/<version>/<文件名>`；固�
 | 2026-09-25 | #3+#4 就绪判据 | 弃用 `/api/health`；改为实读 stdout 就绪行 `dsh web: http://127.0.0.1:<port>/?token=<token>` 取真实端口与 token，再以带 token 的 `GET /` 返回 303/200 确认就绪。收紧条件：仅 loopback、端口必须与 stdout 一致（不一致即明确报错、不静默换端口）、token 只能实读不得自拼、token 在入库与写日志前一律遮蔽。250ms 轮询 / 15000ms 截止 / ready 后 10s 巡检语义不变 | `src/dsh-host.js`（`READY_LINE_RE`、`captureReadyLine`、`confirmHost`、`probeIndex`） |
 | 2026-09-25 | 夹具同步 | `tests/helpers/fake-npx.mjs` 改为**对齐上游形态**：不再提供 `/api/health`，改吐 stdout 就绪行 + 带 token 的 index（303 + Set-Cookie，无 token 401）。夹具此前编码的是 §6 的错误假定，属"mock 通过不等于 host 通过"的实例 | `tests/helpers/` |
 | 2026-09-25 | #5 主窗口鉴权 | 主进程在 ready 后先用本次实例的**进程 token 换取 cookie**（`ses.fetch(url, {redirect:'follow'})`，让上游 303 与其 `Set-Cookie` 在同一 session 内走完），主窗口随后仍加载**干净 URL** `/`。加载用端口取就绪行实读值；因 #3 已强制「stdout 端口 === config.port」，与 M06 的导航白名单 / CSP 端口保持一致。**未放宽任何安全约束**：围栏继续生效、cookie 由上游签发（`HttpOnly` + `SameSite=Strict`，30 天），壳不自造凭据、token 不入日志。§6 无对应冻结句（§5 仅要求"同一 origin"），故不加 §6 标注 | `src/dsh-host.js`（`authorize`）、`src/main.js`（ready 处理、`loadMainWindow`） |
+| 2026-09-25 | #2 端口注入 | 弃用 `DSH_PORT` 环境变量（实测无效），改为 args 追加 `--port <config.port>`。就绪仍以 stdout 实读端口为准并与 `config.port` 比对，不一致即明确报错（不静默换端口） | `src/dsh-host.js`、`tests/helpers/fake-npx.mjs`（改从 argv 读 `--port`） |
+| 2026-09-25 | #8 进程树 | 复现结论：**外部强杀且不带 `/T`** 时，孙进程（`node …@deepseek-ai/dsh`）会存活并继续占 3080；壳自身的 `taskkill /PID <child> /T /F` 能清掉全链（实测 `node(npx) → cmd.exe shim → node(dsh)` 三层）。App 正常退出与强制回收路径均已验证干净。⇒ 降为 P2，不阻塞 | —（无代码改动） |
+| 2026-09-25 | `spawning host gen=1` 结案 | 该行出自 #0/#A 修复前那次运行的 stdout 抓取（`/tmp/dev.log`，现已随会话临时目录过期）。复核：`tryStartHost` 全仓仅 3 处引用（定义、bootstrap 首次调用、`promptRetryOrExit` 的"重试"回调），**不存在自动重启路径**；`maybeAutoRestart` 两处调用点均被 `state === 'ready'` 把守，而超时先置 `crashed` 使 `onChildExit` 两个分支都不进。当前代码 70s 实测（覆盖 15s 超时 + 4 轮以上退避）`spawning host` 计数 = 1。⇒ 判定为对话框"重试"被点击所致（+5.0s），非 bug，结案 | —（无代码改动） |
 适配仅发生于 M04 的启动、探测和关闭边界；D1–D5、页面方法名、更新源语义及安全约束不得被联调人员静默改写。
 Mock 测试通过只证明壳状态机成立；§12 中涉及真实 host、安装、签名及更新下载的用例必须在目标 Windows 环境通过后才能标记发布完成。
 
