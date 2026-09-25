@@ -1204,6 +1204,18 @@ test('§7/铁律③ 差量下载防倒退：不得禁用差分，且发布侧必
   assert.match(releaseSrc, /blockmap/, 'release.mjs 的上传计划必须处理 .blockmap')
 })
 
+test('§7 退避必须被接线：失败路径（showNetworkFailure）要重新排程', async () => {
+  const src = readFileSync(join(root, 'src', 'updater.js'), 'utf8')
+  const at = src.indexOf('function showNetworkFailure')
+  assert.ok(at > 0, '应存在 showNetworkFailure')
+  const body = src.slice(at, src.indexOf('\n  }', at))
+  assert.match(body, /scheduleNext\(\)/,
+    '失败路径必须重新排程 —— 否则 computeCheckDelayMs 的退避算了没人用，且失败一次后再无自动检查')
+  // 成功路径（latest）同样要重新排程，且此时 checkFailures 已被重置
+  const okAt = src.indexOf('function onNotAvailable')
+  assert.match(src.slice(okAt, src.indexOf('\n  }', okAt)), /scheduleNext\(\)/, '成功路径也要重新排程')
+})
+
 test('§7 下载时限：只保留"无进度"看门狗，不设总时长上限（官方口径）', async () => {
   const src = readFileSync(join(root, 'src', 'updater.js'), 'utf8')
   assert.ok(src.includes('DOWNLOAD_NO_PROGRESS_MS'), '必须保留无进度看门狗（快速发现卡死）')

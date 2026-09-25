@@ -340,6 +340,9 @@ export function createUpdater(opts) {
   function showNetworkFailure() {
     clearCheckTimer()
     setPageState('error', { message: '无法连接更新服务' })
+    // 失败必须重新排程，否则退避"算了但没人用"、且失败一次后再无自动检查。
+    // setPageState('error') 已把 checkFailures 累加 ⇒ 这里拿到的就是翻倍后的延迟（上限见 computeCheckDelayMs）。
+    scheduleNext()
     opts.onUpdateOpen()
     // SPEC §7:251：双源网络失败提供"手动下载 / 关闭"（原生对话框）。
     // 每轮一次：本函数只由 failSource 在 pageState === 'checking' 时走到，故手动重试再失败会再弹一次。
