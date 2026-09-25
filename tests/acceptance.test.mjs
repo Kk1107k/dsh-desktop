@@ -1183,6 +1183,13 @@ test('§7:251 默认下载地址的 host 必须在白名单内（改一处不改
   assert.ok(allow.includes(`'${host}'`), `默认地址 host=${host} 必须出现在 DOWNLOAD_HOST_ALLOWLIST 里（当前：${allow}）`)
 })
 
+test('§7 下载时限：只保留"无进度"看门狗，不设总时长上限（官方口径）', async () => {
+  const src = readFileSync(join(root, 'src', 'updater.js'), 'utf8')
+  assert.ok(src.includes('DOWNLOAD_NO_PROGRESS_MS'), '必须保留无进度看门狗（快速发现卡死）')
+  assert.ok(!/DOWNLOAD_TOTAL_DEADLINE_MS/.test(src), '不得再设下载总时长上限（慢速网络会误杀 80MB 的包）')
+  assert.ok(!/total deadline/i.test(src), '总时限的判定与错误文案都应移除')
+})
+
 test('§7 更新检查退避+抖动：失败翻倍/封顶/成功重置/下限 1s（机制对齐官方，数值用我们的）', async () => {
   const { computeCheckDelayMs } = await import('../src/updater.js')
   const H = 3600 * 1000

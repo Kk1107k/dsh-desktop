@@ -6,7 +6,6 @@ import { join } from 'node:path'
 
 const CHECK_DEADLINE_MS = 15000
 const DOWNLOAD_NO_PROGRESS_MS = 30000
-const DOWNLOAD_TOTAL_DEADLINE_MS = 10 * 60 * 1000
 const AUTO_INTERVAL_DEFAULT_H = 6
 // 更新检查的抖动与退避（对齐官方机制，**不对齐数值**）：官方基础间隔 10 分钟是因为他们有服务端
 // 策略轮询；桌面工具用 config.autoCheckIntervalHours（默认 6h）更合理。三者都可用环境变量覆盖
@@ -359,10 +358,10 @@ export function createUpdater(opts) {
       return
     }
     lastProgressAt = now
-    if (downloadStartedAt && now - downloadStartedAt > DOWNLOAD_TOTAL_DEADLINE_MS) {
-      abortDownload(source, new Error('download total deadline exceeded'))
-      return
-    }
+    // 这里**刻意没有"下载总时长上限"**：官方口径是"HTTP 逐连接空闲超时（无响应头/无后续字节才算失败），
+    // 活跃下载不设总时长"。保留总时限会在慢速网络上误杀 80MB 的包（100KB/s 约需 14 分钟 > 原 10 分钟上限），
+    // 而真正的卡死已由上面的"30s 无进度"快速发现 —— 因此只留无进度看门狗，去掉总时限。
+    // 残余风险：只滴速、从不真正停滞的下载不会被中止（可点"稍后/关闭"退出），可接受。
     setPageState('downloading', { progress: p?.percent ? p.percent / 100 : 0 })
   }
   function onUpdateDownloaded(source) {
