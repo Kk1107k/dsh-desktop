@@ -1183,6 +1183,15 @@ test('§7:251 默认下载地址的 host 必须在白名单内（改一处不改
   assert.ok(allow.includes(`'${host}'`), `默认地址 host=${host} 必须出现在 DOWNLOAD_HOST_ALLOWLIST 里（当前：${allow}）`)
 })
 
+test('§11.1 #7 根源：registry 由壳固定下发（不读用户 .npmrc），web/shutdown 两处 spawn 一致', async () => {
+  const src = readFileSync(join(root, 'src', 'dsh-host.js'), 'utf8')
+  assert.match(src, /const NPM_REGISTRY = process\.env\.DSH_DESKTOP_NPM_REGISTRY \|\| 'https:\/\/registry\.npmjs\.org'/,
+    'registry 必须由壳固定（默认官方源，可用 DSH_DESKTOP_NPM_REGISTRY 覆盖）')
+  const pinned = src.match(/npm_config_registry: NPM_REGISTRY/g) ?? []
+  assert.equal(pinned.length, 2, 'web 与 shutdown 两处 spawn 都必须下发同一个 registry')
+  assert.ok(!/DSH_PORT:\s*String/.test(src), 'DSH_PORT 实测无效（§11.1 #2），不应再作为环境变量下发')
+})
+
 test('A05 终态复位：连续两次检查都能开始（第二次不得 E_BUSY）', async () => {
   globalThis.__DSH_TEST_UPDATER__ = { github: { check: (inst) => { inst.emit('update-not-available', {}) } } }
   const { up, d } = await makeUpdater()

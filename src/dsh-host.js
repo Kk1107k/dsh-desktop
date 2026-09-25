@@ -15,6 +15,15 @@ import { dirname, isAbsolute, join } from 'node:path'
 //   **不是**声称验证了官方那个组合。详见 SPEC §11.1「上游版本升级至 0.1.7-rc.2」。
 const TARGET_PKG = '@deepseek-ai/dsh@0.1.7-rc.2'
 /**
+ * 拉取上游 CLI 用的 npm registry：**由壳固定下发，不读用户环境/项目的 .npmrc**。
+ * 依据官方同类开关（`DSH_DESKTOP_NPM_REGISTRY`，默认官方源、可换镜像）。
+ * 为什么必须固定：`--offline` 的**元数据缓存键受 registry 影响**，预热与运行时不一致就
+ * ENOTCACHED（表现为 host 起不来，§11.1 #7）。固定之后：开发机与装包后行为一致、
+ * 预热与运行时一致（缓存必中）、用户机器上有别的 registry 配置也不影响。
+ * ⚠ 改这里或换镜像后**必须用同一个 registry 重灌 npx 缓存**（`--offline` 才可能命中）。
+ */
+const NPM_REGISTRY = process.env.DSH_DESKTOP_NPM_REGISTRY || 'https://registry.npmjs.org'
+/**
  * 上游就绪行（stdout）：`dsh web: http://127.0.0.1:<port>/?token=<token>`。
  * 实测该版本没有 `/api/health`（`/api/*` 一律先过浏览器鉴权），就绪以本行 + 带 token 的
  * index 请求为准。token 只从本行实读，不自造、不落日志。详见 SPEC §11.1。
@@ -504,7 +513,9 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
     const { nodeExe, npxCli } = locate()
     // 端口用上游公开开关 --port 传入：实测 DSH_PORT 环境变量被忽略（见 SPEC §11.1 #2）。
     const args = [npxCli, '--yes', '--offline', `--package=${TARGET_PKG}`, '--', 'dsh', 'web', '--no-open', '--port', String(config.port)]
-    const env = { ...process.env, DSH_NO_BROWSER: '1', ELECTRON_RUN_AS_NODE: '0' }
+    // npm_config_registry 由壳固定下发（覆盖用户/项目 .npmrc），保证 --offline 的元数据缓存键
+    // 与预热时一致 —— 这是 §11.1 #7 的根源修法，详见 NPM_REGISTRY 处的说明。
+    const env = { ...process.env, DSH_NO_BROWSER: '1', ELECTRON_RUN_AS_NODE: '0', npm_config_registry: NPM_REGISTRY }
     log.info(`spawning host gen=${generation} port=${config.port}`)
 
     child = spawn(nodeExe, args, {
@@ -738,7 +749,8 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
       // 优先优雅关闭：dsh shutdown 末尾参数。运行时定位失败不阻塞回收，直接转强制。
       try {
         const { nodeExe, npxCli } = locate()
-        const env = { ...process.env, DSH_NO_BROWSER: '1', DSH_PORT: String(config.port), ELECTRON_RUN_AS_NODE: '0' }
+        // 与 web spawn 保持一致：DSH_PORT 实测对上游无效（§11.1 #2）已移除；registry 同样由壳固定。
+        const env = { ...process.env, DSH_NO_BROWSER: '1', ELECTRON_RUN_AS_NODE: '0', npm_config_registry: NPM_REGISTRY }
         shutdown = spawn(nodeExe, [npxCli, '--yes', '--offline', `--package=${TARGET_PKG}`, '--', 'dsh', 'shutdown'], {
           cwd: process.cwd(), env, shell: false, windowsHide: true, detached: false,
           stdio: ['ignore', 'pipe', 'pipe'],
