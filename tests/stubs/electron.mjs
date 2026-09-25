@@ -87,6 +87,9 @@ export const session = {
   defaultSession: Object.assign(new EventEmitter(), {
     // main.js 在 ready 后用它做 token→cookie 交换；假件只需存在且不抛。
     fetch: async () => ({ status: 303, body: null }),
+    // SPEC §9:283 的权限默认拒绝钩子（main.js 的 hardenSession 会调）。
+    setPermissionRequestHandler() {},
+    setPermissionCheckHandler() {},
   }),
 }
 export const dialog = { showMessageBox: async () => ({ response: 0 }) }

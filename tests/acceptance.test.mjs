@@ -693,6 +693,17 @@ test('A09 托盘徽章优先级：update > running > idle（host 健康显绿，
   assert.match(icon(), /^tray\.png$/, 'host 失联/停止应回落 idle（SPEC §6:203）')
 })
 
+test('§9:283 权限默认拒绝：session 上的权限请求/检查处理器一律返回 false', async () => {
+  const src = readFileSync(join(root, 'src', 'main.js'), 'utf8')
+  const at = src.indexOf('function hardenSession')
+  assert.ok(at > 0, '应存在 hardenSession')
+  const fn = src.slice(at, src.indexOf('\n}', at))
+  assert.match(fn, /setPermissionRequestHandler\(\([^)]*\)\s*=>\s*cb\(false\)\)/, '权限请求必须一律拒绝')
+  assert.match(fn, /setPermissionCheckHandler\(\(\)\s*=>\s*false\)/, '权限检查必须一律拒绝')
+  const sites = (src.match(/hardenSession\(/g) ?? []).length - 1   // 减去函数定义本身
+  assert.ok(sites >= 1, `hardenSession 必须被实际调用（当前 ${sites} 处）`)
+})
+
 test('A09 更新窗口 X：available 下同按钮语义（先问主进程，只有放行才销毁）', async () => {
   resetElectronStub({})
   globalThis.__DSH_TEST_WINDOWS__ = []

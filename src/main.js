@@ -157,6 +157,16 @@ export async function handleDshAppRequest(request) {
   return new Response(body, { status: 200, headers })
 }
 
+/**
+ * SPEC §9:283：权限请求与权限检查一律默认拒绝 —— 不自动授权摄像头、麦克风、定位、通知、
+ * 屏幕捕获或任意设备访问。必须在任何窗口加载前装好，否则 Electron 的内置默认会先放行一批。
+ * @param {import('electron').Session} ses
+ */
+function hardenSession(ses) {
+  ses.setPermissionRequestHandler((_wc, _permission, cb) => cb(false))
+  ses.setPermissionCheckHandler(() => false)
+}
+
 app.enableSandbox()
 app.setName(APP_NAME)
 registerDshAppProtocol()
@@ -204,6 +214,9 @@ async function bootstrap() {
   state.config = loadConfig()
   log = await createLogger()
   global.log = log
+
+  // SPEC §9:283：权限默认拒绝，必须在任何窗口加载前装好。
+  hardenSession(session.defaultSession)
 
   protocol.handle('dsh-app', handleDshAppRequest)
 
