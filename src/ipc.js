@@ -60,9 +60,10 @@ function errMessage(err) { return err instanceof Error ? err.message : String(er
 /**
  * @typedef {object} IpcDeps
  * @property {import('./logger.js').Logger} logger
- * @property {{checkManual?:()=>Promise<{ok:boolean, error?:{code:string,message:string}}>, startDownload?:()=>Promise<{ok:boolean, error?:{code:string,message:string}}>, snooze?:()=>{ok:boolean, error?:{code:string,message:string}}, close?:()=>{ok:boolean, error?:{code:string,message:string}}, getInternalSnapshot?:()=>object}|null} [updater]
+ * @property {{checkManual?:()=>Promise<{ok:boolean, error?:{code:string,message:string}}>, startDownload?:()=>Promise<{ok:boolean, error?:{code:string,message:string}}>, snooze?:()=>{ok:boolean, error?:{code:string,message:string}}, close?:()=>{ok:boolean, error?:{code:string,message:string}}, getInternalEvent?:()=>({revision:number, snapshot:object})}|null} [updater]
  * @property {()=>import('electron').BrowserWindow|null} getSplash
  * @property {()=>import('electron').BrowserWindow|null} getMain
+ * @property {()=>import('electron').BrowserWindow|null} [getUpdate] 更新窗口（`dsh:update-state` 的接收方，SPEC §5:174）
  * @property {()=>number} getGeneration
  * @property {()=>void} setFinishRequested
  * @property {()=>void} onSplashFinishConfirm
@@ -96,7 +97,8 @@ export function createIpc(deps) {
           version: getElectronApp().getVersion(),
           status: deps.lastSplashStatus ?? '',
           finishRequested: !!deps.finishRequested,
-          update: updaterRef?.getInternalSnapshot?.() ?? { state: 'idle' },
+          // SPEC §5:156：update 必须是 UpdateEvent（{revision, snapshot}），不是裸快照。
+          update: updaterRef?.getInternalEvent?.() ?? { revision: 0, snapshot: { state: 'idle' } },
         }
         return ok(bootstrap)
       } catch (err) {
@@ -198,9 +200,11 @@ export function createIpc(deps) {
    * @param {{revision:number, snapshot:object}} ev
    */
   function pushUpdateState(ev) {
-    const main = deps.getMain?.()
-    if (!main || main.isDestroyed?.()) return
-    main.webContents.send(CHANNELS.UPDATE_STATE, ev)
+    // SPEC §5:174：`dsh:update-state` 的接收方是 **update 页面**（住在更新窗口里）。
+    // 曾发到主窗口 —— 主窗口不挂 preload、没有任何订阅者，推送等于丢掉：页面除了初值之外永不更新。
+    const target = deps.getUpdate?.()
+    if (!target || target.isDestroyed?.()) return
+    target.webContents.send(CHANNELS.UPDATE_STATE, ev)
   }
 
   function dispose() {

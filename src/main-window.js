@@ -74,7 +74,7 @@ export function hardenLocalPageWindow(win, allowedUrl) {
 /**
  * 创建主窗口控制器。
  * @param {{config:{port:number}, logger:import('./logger.js').Logger, isQuitting?:()=>boolean, isTrayReady?:()=>boolean, onUpdateCloseRequest?:()=>Promise<boolean>}} opts
- * @returns {{win:import('electron').BrowserWindow|null, ensure:()=>boolean, loadURL:(url:string)=>Promise<void>, show:()=>void, openUpdateWindow:()=>void, requestUpdateClose:()=>Promise<boolean>, loaded:boolean, readyToShow:boolean, once:(ev:string,fn:()=>void)=>void}}
+ * @returns {{win:import('electron').BrowserWindow|null, updateWindow:import('electron').BrowserWindow|null, ensure:()=>boolean, loadURL:(url:string)=>Promise<void>, show:()=>void, openUpdateWindow:()=>void, requestUpdateClose:()=>Promise<boolean>, loaded:boolean, readyToShow:boolean, once:(ev:string,fn:()=>void)=>void}}
  */
 export function createMainWindow({ config, logger, isQuitting, isTrayReady, onUpdateCloseRequest }) {
   const log = logger
@@ -277,5 +277,11 @@ export function createMainWindow({ config, logger, isQuitting, isTrayReady, onUp
     listeners.get(ev)?.add(fn)
   }
 
-  return { get win() { return win }, ensure, loadURL, show, openUpdateWindow, requestUpdateClose, get loaded() { return self.loaded }, get readyToShow() { return self.readyToShow }, once }
+  return {
+    get win() { return win },
+    /** 更新窗口（供 M09 把 `dsh:update-state` 推给 update 页面，SPEC §5:174）。 */
+    get updateWindow() { return updateWin },
+    ensure, loadURL, show, openUpdateWindow, requestUpdateClose,
+    get loaded() { return self.loaded }, get readyToShow() { return self.readyToShow }, once,
+  }
 }

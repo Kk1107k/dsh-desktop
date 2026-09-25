@@ -410,11 +410,17 @@ export function createUpdater(opts) {
     inflight = null
   }
 
-  function getInternalSnapshot() { return snapshot }
+  /**
+   * 供 preload 补发用的**事件形状**（SPEC §5:156 的 UpdateEvent = {revision, snapshot}）。
+   * 不要退化成只返回 snapshot：preload 按 `ev.revision` 丢弃旧快照、按 `b.update.snapshot` 取初值，
+   * 形状不对会让更新页永远拿不到状态（实测：页面停在静态初始 DOM）。
+   * @returns {{revision:number, snapshot:object}}
+   */
+  function getInternalEvent() { return { revision, snapshot } }
 
   return {
     checkOnce, checkManual, startDownload, snooze, close,
     scheduleOnMainWindowReady, dispose,
-    getInternalSnapshot,
+    getInternalEvent,
   }
 }

@@ -265,6 +265,8 @@ async function bootstrap() {
     logger: log,
     getSplash: () => state.splash,
     getMain: () => state.main?.win ?? null,
+    // SPEC §5:174：update 状态的接收方是更新窗口（主窗口不挂 preload，推给它等于丢）。
+    getUpdate: () => state.main?.updateWindow ?? null,
     getGeneration: () => state.generation,
     setFinishRequested: () => { state.finishRequested = true },
     onSplashFinishConfirm: () => onSplashFinishConfirm(),

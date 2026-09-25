@@ -586,7 +586,8 @@ test('A07 IPC 授权：host 窗口 / 子 frame / 未知 URL 一律 E_FORBIDDEN�
   const okRes = await call(CHANNELS.BRIDGE_READY, { sender: sender('dsh-app://ui/splash.html', frameSplash), senderFrame: frameSplash })
   assert.equal(okRes.ok, true)
   assert.equal(okRes.data.version, '0.1.0')
-  assert.deepEqual(okRes.data.update, { state: 'idle' })
+  assert.deepEqual(okRes.data.update, { revision: 0, snapshot: { state: 'idle' } },
+    'update 必须是 SPEC §5:156 的 UpdateEvent（{revision, snapshot}），不是裸快照')
 
   // host 窗口（上游页面）：拒绝。
   const fromHost = await call(CHANNELS.BRIDGE_READY, { sender: sender('http://127.0.0.1:3080/', frameSplash), senderFrame: frameSplash })
@@ -934,6 +935,55 @@ function loadPreload({ role, bootstrap }) {
   )
   return { exposed, listeners }
 }
+
+test('§5:156/5:181 集成：ipc 的 bridge payload 形状必须能让更新页渲染出终态', async () => {
+  resetElectronStub({})
+  const { createIpc, CHANNELS } = await import('../src/ipc.js')
+  const { ipcMain } = await import('electron')
+  const ipc = createIpc({
+    logger: fakeLogger(), getSplash: () => null, getMain: () => null, getUpdate: () => null, getGeneration: () => 0,
+    setFinishRequested: () => {}, onSplashFinishConfirm: () => {}, onSplashCloseBeforeFinish: () => {},
+    updater: {
+      close: () => ({ ok: true }),
+      getInternalEvent: () => ({ revision: 9, snapshot: { state: 'error', message: '无法连接更新服务' } }),
+    },
+    tray: () => null,
+  })
+  ipc.register()
+  const frame = { processArguments: ['--dsh-role=update', '--dsh-version=0.1.0'] }
+  const ev = { sender: { isDestroyed: () => false, getURL: () => 'dsh-app://ui/update-dialog.html', mainFrame: frame }, senderFrame: frame }
+  const res = await ipcMain.handlers.get(CHANNELS.BRIDGE_READY)(ev)
+  assert.equal(res.ok, true)
+  assert.equal(typeof res.data.update.revision, 'number', 'update 必须带 revision（preload 按它丢弃旧快照）')
+  assert.equal(res.data.update.snapshot.state, 'error')
+  ipc.dispose()
+
+  // 把这份**真实 payload** 喂给 preload：页面侧（以 onState 订阅者代表）必须拿到终态并渲染
+  const { exposed } = loadPreload({ role: 'update', bootstrap: res.data })
+  const seen = []
+  exposed.updateAPI.onState((s) => seen.push(s))
+  await new Promise(r => setTimeout(r, 0))
+  assert.deepEqual(seen, ['error'], 'ipc 的 payload 形状 + preload 补发，合起来必须把终态送到页面')
+  assert.equal(exposed.updateAPI.getState().state, 'error', 'getState() 也应拿到终态')
+})
+
+test('§5:174 update-state 推给更新窗口，不得推给主窗口', async () => {
+  resetElectronStub({})
+  const { createIpc } = await import('../src/ipc.js')
+  let mainSends = 0
+  let updSends = 0
+  const mkWin = (onSend) => ({ isDestroyed: () => false, webContents: { send: onSend } })
+  const ipc = createIpc({
+    logger: fakeLogger(), getSplash: () => null, getGeneration: () => 0,
+    getMain: () => mkWin(() => { mainSends++ }),
+    getUpdate: () => mkWin(() => { updSends++ }),
+    setFinishRequested: () => {}, onSplashFinishConfirm: () => {}, onSplashCloseBeforeFinish: () => {},
+    updater: null, tray: () => null,
+  })
+  ipc.pushUpdateState({ revision: 1, snapshot: { state: 'latest', version: '0.1.0' } })
+  assert.equal(mainSends, 0, '不得推给主窗口 —— 主窗口不挂 preload、没有任何订阅者')
+  assert.equal(updSends, 1, '应推给更新窗口（SPEC §5:174 的接收方是 update 页面）')
+})
 
 test('§5:181 preload 补发：页面注册早于桥返回时也必须拿到状态（无推送）', async () => {
   const tick = () => new Promise(r => setTimeout(r, 0))

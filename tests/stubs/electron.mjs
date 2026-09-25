@@ -57,7 +57,8 @@ export class BrowserWindow extends EventEmitter {
       setWindowOpenHandler(fn) { this.windowOpenHandler = fn },
       isLoading: () => false,
       getURL: () => 'about:blank',
-      send() {},
+      sent: [],
+      send(ch, payload) { this.sent.push([ch, payload]) },
     })
     ;(globalThis.__DSH_TEST_WINDOWS__ ??= []).push(this)
   }
