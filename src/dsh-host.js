@@ -247,6 +247,7 @@ function probeIndex(port, token, timeoutMs) {
  * @property {boolean} [fatal]
  * @property {number|null} [code]
  * @property {string|null} [signal]
+ * @property {number} [port]
  */
 
 /**
@@ -309,6 +310,32 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
   function isHealthy() { return state === 'ready' && !!(child && !child.killed) }
 
   /**
+   * 用本次实例的进程 token 换取 cookie 并落进给定 session（上游 index 的 token 交换）。
+   * 主窗口随后用干净 URL 加载即可通过浏览器围栏；token 只在内存中传递，绝不写日志。
+   * @param {import('electron').Session} ses
+   * @returns {Promise<boolean>} true = 已获得 cookie（非 401/403）
+   */
+  async function authorize(ses) {
+    const info = readyInfo
+    if (!info) return false
+    // 注意：该 url 含 token，只能作为请求参数使用，不得进入任何日志或错误信息。
+    const url = `http://127.0.0.1:${info.port}/?token=${info.token}`
+    try {
+      // redirect:'follow' 让上游 303 与其 Set-Cookie 在同一 session 内走完。
+      const res = await ses.fetch(url, { redirect: 'follow' })
+      try { await res.body?.cancel?.() } catch (_) { /* 只关心 cookie 是否落盘 */ }
+      if (res.status === 401 || res.status === 403) {
+        log.warn(`host authorize rejected status=${res.status}`)
+        return false
+      }
+      return true
+    } catch (err) {
+      log.warn('host authorize failed', err instanceof Error ? err.message : String(err))
+      return false
+    }
+  }
+
+  /**
    * 启动 host。每次自增代次；包括首次启动都经此入口。
    * @param {{generation?:number}} [opts]
    * @returns {Promise<void>}
@@ -316,6 +343,9 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
   async function start({ generation: gen } = {}) {
     if (gen !== undefined && gen !== generation) generation = gen
     else generation++
+    // 每次启动重置就绪行解析结果：旧代次的 token 不得用于确认新实例。
+    readyInfo = null
+    readyScanBuf = ''
     setState('starting')
     emit('starting', { generation })
 
@@ -448,7 +478,7 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
     if (state !== 'starting') return
     stopProbes()
     setState('ready')
-    emit('ready', { generation })
+    emit('ready', { generation, port: readyInfo?.port ?? config.port })
     scheduleHealthChecks()
     // 稳定 5 分钟后清零重启预算，避免在 ready 阶段一次性清零形成无限重启。
     if (stableResetTimer) clearTimeout(stableResetTimer)
@@ -609,5 +639,9 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
     })
   }
 
-  return { start, stop, restart, isHealthy, getState, currentGeneration, on, off, stopped }
+  return {
+    start, stop, restart, isHealthy, getState, currentGeneration, on, off, stopped, authorize,
+    /** 就绪行报告的真实端口；未就绪时回落到配置端口。 */
+    get port() { return readyInfo?.port ?? config.port },
+  }
 }

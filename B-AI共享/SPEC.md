@@ -384,6 +384,7 @@ COS 安装包和 blockmap 上传到 `/dsh-desktop/<version>/<文件名>`；固�
 | 2026-09-25 | #1 版本 | `TARGET_PKG` 取 `0.1.7-alpha.2`（上游真实存在的版本，与 `alpha` tag 及 npx 缓存一致） | `src/dsh-host.js` |
 | 2026-09-25 | #3+#4 就绪判据 | 弃用 `/api/health`；改为实读 stdout 就绪行 `dsh web: http://127.0.0.1:<port>/?token=<token>` 取真实端口与 token，再以带 token 的 `GET /` 返回 303/200 确认就绪。收紧条件：仅 loopback、端口必须与 stdout 一致（不一致即明确报错、不静默换端口）、token 只能实读不得自拼、token 在入库与写日志前一律遮蔽。250ms 轮询 / 15000ms 截止 / ready 后 10s 巡检语义不变 | `src/dsh-host.js`（`READY_LINE_RE`、`captureReadyLine`、`confirmHost`、`probeIndex`） |
 | 2026-09-25 | 夹具同步 | `tests/helpers/fake-npx.mjs` 改为**对齐上游形态**：不再提供 `/api/health`，改吐 stdout 就绪行 + 带 token 的 index（303 + Set-Cookie，无 token 401）。夹具此前编码的是 §6 的错误假定，属"mock 通过不等于 host 通过"的实例 | `tests/helpers/` |
+| 2026-09-25 | #5 主窗口鉴权 | 主进程在 ready 后先用本次实例的**进程 token 换取 cookie**（`ses.fetch(url, {redirect:'follow'})`，让上游 303 与其 `Set-Cookie` 在同一 session 内走完），主窗口随后仍加载**干净 URL** `/`。加载用端口取就绪行实读值；因 #3 已强制「stdout 端口 === config.port」，与 M06 的导航白名单 / CSP 端口保持一致。**未放宽任何安全约束**：围栏继续生效、cookie 由上游签发（`HttpOnly` + `SameSite=Strict`，30 天），壳不自造凭据、token 不入日志。§6 无对应冻结句（§5 仅要求"同一 origin"），故不加 §6 标注 | `src/dsh-host.js`（`authorize`）、`src/main.js`（ready 处理、`loadMainWindow`） |
 适配仅发生于 M04 的启动、探测和关闭边界；D1–D5、页面方法名、更新源语义及安全约束不得被联调人员静默改写。
 Mock 测试通过只证明壳状态机成立；§12 中涉及真实 host、安装、签名及更新下载的用例必须在目标 Windows 环境通过后才能标记发布完成。
 

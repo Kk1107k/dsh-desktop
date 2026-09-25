@@ -231,9 +231,13 @@ async function tryStartHost() {
     promptRetryOrExit('服务启动失败，请重试或退出。')
     return
   }
-  state.host.on('ready', ({ generation }) => {
+  state.host.on('ready', async ({ generation }) => {
     if (generation !== state.generation) return
     state.ipc.pushSplashStatus('就绪')
+    // 上游 index 需进程 token 换 cookie 后才可访问（SPEC §11.1）：先在同一 session 内完成
+    // 交换，再用干净 URL 加载主窗口，避免落到 401 页面。token 不入日志、不进页面契约。
+    await state.host.authorize(session.defaultSession)
+    if (generation !== state.generation || state.quitting) return
     state.ipc.pushSplashStatus('正在加载界面…')
     loadMainWindow()
   })
@@ -257,7 +261,7 @@ async function tryStartHost() {
 
 function loadMainWindow() {
   if (state.quitting || state.generation !== state.host.currentGeneration()) return
-  const url = `http://127.0.0.1:${state.config.port}`
+  const url = `http://127.0.0.1:${state.host.port}`
   state.main.loadURL(url).then(() => {
     setTimeout(() => {
       if (state.generation !== state.host.currentGeneration()) return

@@ -66,7 +66,12 @@ export const protocol = {
 }
 /** net 假件：main.js 的 dsh-app 协议处理器经它读包内页面；测试不走该路径，够顶层引用即可。 */
 export const net = { fetch: async () => new Response('', { status: 200 }) }
-export const session = { defaultSession: new EventEmitter() }
+export const session = {
+  defaultSession: Object.assign(new EventEmitter(), {
+    // main.js 在 ready 后用它做 token→cookie 交换；假件只需存在且不抛。
+    fetch: async () => ({ status: 303, body: null }),
+  }),
+}
 export const dialog = { showMessageBox: async () => ({ response: 0 }) }
 export const shell = { openExternal: async () => {} }
 
