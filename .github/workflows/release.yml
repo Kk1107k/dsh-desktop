@@ -67,10 +67,13 @@ jobs:
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          # electron-builder 自带的构建二进制（winCodeSign/NSIS/7zip）下载源。
-          # 注意：.npmrc 里的 electron_builder_binaries_mirror 它不读，只认环境变量。
-          # 留空 = 官方源（GitHub）；国内 runner 可设为
-          # https://npmmirror.com/mirrors/electron-builder-binaries/
+          # electron-builder 打包期要下载的两类归档：它自己的构建二进制（winCodeSign/NSIS/7zip）
+          # 与 Electron 的归档+校验和。注意：.npmrc 里的 electron_mirror /
+          # electron_builder_binaries_mirror 它都不读，只认环境变量，且两个都必须给。
+          # 留空 = 官方源（GitHub）；国内 runner 设为：
+          #   ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+          #   ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
+          ELECTRON_MIRROR: ""
           ELECTRON_BUILDER_BINARIES_MIRROR: ""
 
       - name: 从构建元数据生成 stable.yml

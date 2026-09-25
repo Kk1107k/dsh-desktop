@@ -91,17 +91,23 @@ pnpm dev
 `build` 顺序固定：`build:preload → typecheck → test → electron-builder --win nsis --x64 --publish never`，
 全部发布产物进入 `dist/`。
 
-> ⚠ **国内网络打包前必须设镜像环境变量**：`electron-builder` 要下载它自己的构建二进制
-> （winCodeSign / NSIS / 7zip），默认走 GitHub，国内会 `connect ETIMEDOUT 20.205.243.166:443`。
-> 注意 `.npmrc` 里的 `electron_builder_binaries_mirror` **electron-builder 不读**，只认同名环境变量：
+> ⚠ **国内网络打包前必须设两个镜像环境变量**：`electron-builder` 在打包阶段要下载两类归档 ——
+> ① 它自己的构建二进制（winCodeSign / NSIS / 7zip）、② Electron 的归档与校验和。
+> 两者默认都走 GitHub，国内会 `connect ETIMEDOUT 20.205.243.166:443`。
+> **`.npmrc` 里的 `electron_mirror` / `electron_builder_binaries_mirror` 它都不读**，只认同名环境变量；
+> 少设任一个都会在打包中途失败（实测：只设 builder 镜像时，会在拉 Electron 校验和那一步超时）：
 >
 > ```bash
 > # Git Bash
-> ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ pnpm build
+> ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ \
+> ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ \
+> pnpm build
 > ```
 > ```powershell
 > # PowerShell
-> $env:ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"; pnpm build
+> $env:ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
+> $env:ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
+> pnpm build
 > ```
 > 境外网络可不设（走官方源）。
 
