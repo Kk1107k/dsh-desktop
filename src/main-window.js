@@ -26,17 +26,21 @@ const HOST_CSP = (port) => [
 
 /**
  * 创建主窗口控制器。
- * @param {{config:{port:number}, logger:import('./logger.js').Logger}} opts
- * @returns {{win:import('electron').BrowserWindow|null, loadURL:(url:string)=>Promise<void>, show:()=>void, openUpdateWindow:()=>void, loaded:boolean, readyToShow:boolean, once:(ev:string,fn:()=>void)=>void}}
+ * @param {{config:{port:number}, logger:import('./logger.js').Logger, isQuitting?:()=>boolean, isTrayReady?:()=>boolean}} opts
+ * @returns {{win:import('electron').BrowserWindow|null, ensure:()=>boolean, loadURL:(url:string)=>Promise<void>, show:()=>void, openUpdateWindow:()=>void, loaded:boolean, readyToShow:boolean, once:(ev:string,fn:()=>void)=>void}}
  */
-export function createMainWindow({ config, logger }) {
+export function createMainWindow({ config, logger, isQuitting, isTrayReady }) {
   const log = logger
   /** @type {import('electron').BrowserWindow|null} */ let win = null
   /** @type {import('electron').BrowserWindow|null} */ let updateWin = null
   const self = /** @type {{loaded:boolean, readyToShow:boolean, emit?:(ev:string)=>void}} */ ({ loaded: false, readyToShow: false })
 
-  function create() {
-    win = new BrowserWindow({
+  /**
+   * @param {boolean} [rebuilt] 是否为重建（销毁后由托盘唤回），重建时页面就绪即显示。
+   */
+  function create(rebuilt = false) {
+    /** @type {import('electron').BrowserWindow} */
+    const w = new BrowserWindow({
       width: 1280, height: 800, minWidth: 960, minHeight: 640,
       show: false, backgroundColor: '#0f1419',
       title: 'DSH Desktop',
@@ -49,9 +53,12 @@ export function createMainWindow({ config, logger }) {
         // 不设 preload：上游页面不获得桌面桥。
       },
     })
+    win = w
+    self.loaded = false
+    self.readyToShow = false
 
     // 默认拒绝任何新窗口；外部链接由主进程白名单打开。
-    win.webContents.setWindowOpenHandler(({ url }) => {
+    w.webContents.setWindowOpenHandler(({ url }) => {
       if (/^https:\/\//.test(url)) shell.openExternal(url)
       return { action: 'deny' }
     })
@@ -62,31 +69,53 @@ export function createMainWindow({ config, logger }) {
       const allowed = new RegExp(`^http://127\\.0\\.0\\.1:${config.port}/`)
       if (!allowed.test(url)) e.preventDefault()
     }
-    win.webContents.on('will-navigate', guardNav)
-    win.webContents.on('will-redirect', guardNav)
-    win.webContents.on('will-attach-webview', (e) => e.preventDefault())
+    w.webContents.on('will-navigate', guardNav)
+    w.webContents.on('will-redirect', guardNav)
+    w.webContents.on('will-attach-webview', (e) => e.preventDefault())
 
     // host session 安装统一的 onHeadersReceived；不关闭 webSecurity，不忽略证书错误。
-    const hostSession = win.webContents.session
+    const hostSession = w.webContents.session
     hostSession.webRequest.onHeadersReceived((details, cb) => {
       const res = { responseHeaders: { ...details.responseHeaders } }
       res.responseHeaders['Content-Security-Policy'] = [HOST_CSP(config.port)]
       cb(res)
     })
 
-    win.once('ready-to-show', () => {
+    // SPEC §4：主窗口关闭且 quitting=false 时 preventDefault + hide（隐藏到托盘）。
+    // 必须挂在窗口自身的 'close' 上：'window-all-closed' 在窗口已销毁后才触发，
+    // 在 Windows 上拦不住销毁（preventDefault 仅用于 macOS 阻止退出）。
+    w.on('close', (e) => {
+      if (isQuitting?.()) return          // 真退出：放行
+      if (!isTrayReady?.()) return        // 托盘未就绪：放行，避免窗口关不掉（SPEC §4）
+      e.preventDefault()
+      if (!w.isDestroyed()) w.hide()
+    })
+
+    w.once('ready-to-show', () => {
       self.readyToShow = true
       self.emit?.('ready-to-show')
+      // 重建场景：页面就绪即显示，避免用户点了托盘却什么都没出现。
+      if (rebuilt && !w.isDestroyed()) { w.show(); w.focus() }
     })
-    win.webContents.on('did-finish-load', () => { self.loaded = true })
-    win.webContents.on('render-process-gone', (_e, details) => {
+    w.webContents.on('did-finish-load', () => { self.loaded = true })
+    w.webContents.on('render-process-gone', (_e, details) => {
       log.error('renderer gone', details)
       // 显示原生错误提示，禁止静默隐藏。
     })
-    win.on('closed', () => { win = null })
+    w.on('closed', () => { if (win === w) win = null })
   }
 
   create()
+
+  /**
+   * 确保主窗口存在：已销毁时重建（SPEC §8 第 1 条）。
+   * @returns {boolean} true = 本次发生了重建
+   */
+  function ensure() {
+    if (win && !win.isDestroyed()) return false
+    create(true)
+    return true
+  }
 
   /**
    * @param {string} url
@@ -98,7 +127,12 @@ export function createMainWindow({ config, logger }) {
   }
 
   function show() {
-    if (win && !win.isDestroyed()) { win.show(); win.focus() }
+    if (ensure()) return                 // 重建中：由 ready-to-show 负责显示
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+    }
   }
 
   /**
@@ -136,5 +170,5 @@ export function createMainWindow({ config, logger }) {
     listeners.get(ev)?.add(fn)
   }
 
-  return { get win() { return win }, loadURL, show, openUpdateWindow, get loaded() { return self.loaded }, get readyToShow() { return self.readyToShow }, once }
+  return { get win() { return win }, ensure, loadURL, show, openUpdateWindow, get loaded() { return self.loaded }, get readyToShow() { return self.readyToShow }, once }
 }

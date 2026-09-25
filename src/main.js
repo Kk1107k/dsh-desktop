@@ -132,15 +132,12 @@ process.on('unhandledRejection', reason => {
   cleanupAndQuit().finally(() => app.exit(1))
 })
 
-app.on('window-all-closed', e => {
-  // 关闭按钮走托盘隐藏路径；只有 quitting 时才真正退出。
-  if (state.quitting) return
-  if (state.tray && state.main?.win && !state.main.win.isDestroyed()) {
-    e.preventDefault()
-    state.main.win.hide()
-    return
-  }
-  // 托盘未就绪：保持默认退出行为，避免窗口无法关闭的卡死。
+app.on('window-all-closed', () => {
+  // 「关闭 → 隐藏到托盘」的职责已移交给 M06 的窗口 close 拦截（SPEC §4）。
+  // 本事件在所有窗口**已销毁之后**才触发，其 preventDefault 在 Windows 上拦不住销毁
+  // （那只用于 macOS 阻止退出），故这里只表达"确实没有窗口了"的退出语义：
+  // quitting 中 → 退出；托盘未就绪 → 退出，避免无窗口常驻。
+  if (state.quitting || !state.tray) app.quit()
 })
 
 async function bootstrap() {
@@ -169,7 +166,13 @@ async function bootstrap() {
   })
   state.ipc.register()
 
-  state.main = createMainWindow({ config: state.config, logger: log })
+  state.main = createMainWindow({
+    config: state.config,
+    logger: log,
+    // 只注入取值函数：M06 不直接读 main.js 的私有 state。
+    isQuitting: () => state.quitting,
+    isTrayReady: () => !!state.tray,
+  })
 
   state.updater = createUpdater({
     logger: log,
@@ -195,7 +198,7 @@ async function bootstrap() {
 
   state.tray = createTray({
     logger: log,
-    onOpen: () => state.main?.show(),
+    onOpen: () => { void reopenMainWindow() },
     onCheckUpdate: () => state.updater.checkManual(),
     getRunMode: () => state.config.runMode,
     setRunMode: (mode) => persistRunMode(mode),
@@ -283,6 +286,26 @@ function loadMainWindow() {
       onUiLoadError()
     }
   }, SPEC_MAIN_LOAD_TIMEOUT_MS)
+}
+
+/**
+ * 托盘「打开 DSH 桌面」：窗口还在就显示；已销毁则经 M06 重建，并在重建后重新换取
+ * cookie 再加载同一 origin（SPEC §8 第 1 条 + §11.1 的 token 交换）。
+ */
+async function reopenMainWindow() {
+  if (state.quitting) return
+  const rebuilt = state.main?.ensure?.() === true
+  if (!rebuilt) { state.main?.show?.(); return }
+  if (state.host?.isHealthy?.()) await state.host.authorize(session.defaultSession)
+  if (state.quitting) return
+  try {
+    await state.main.loadURL(`http://127.0.0.1:${state.host?.port ?? state.config.port}`)
+  } catch (err) {
+    // 加载失败也要把窗口显示出来，避免"点了托盘却什么都没出现"。
+    log.error('main window reopen load failed', err)
+  }
+  if (state.quitting) return
+  state.main.show()
 }
 
 function scheduleFinalGate() {
