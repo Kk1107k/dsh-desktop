@@ -1,6 +1,6 @@
 // 启动编排唯一入口：所有退出路径必须经 cleanupAndQuit，禁止在别处直接 app.quit。
-import { app, BrowserWindow, dialog, protocol, session } from 'electron'
-import { fileURLToPath } from 'node:url'
+import { app, BrowserWindow, dialog, net, protocol, session } from 'electron'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, copyFileSync } from 'node:fs'
 import { createLogger } from './logger.js'
@@ -75,17 +75,24 @@ function registerDshAppProtocol() {
   }])
 }
 
-function handleDshAppRequest(request, callback) {
+/**
+ * dsh-app 请求处理器：仅放行白名单页面，并拒绝任何越出 __dirname 的路径。
+ * 注意：protocol.handle 只传 request 且要求返回 Response；旧版 registerFileProtocol 的
+ * (request, callback) 形态会让 callback 为 undefined（TypeError: callback is not a function，
+ * 表现为 splash 以 ERR_UNEXPECTED 加载失败）。文件经 net.fetch 读取以保留 MIME 与流式。
+ * @param {Request} request
+ * @returns {Promise<Response>}
+ */
+async function handleDshAppRequest(request) {
   const url = new URL(request.url)
-  const host = url.host
-  if (host !== 'ui') return callback({ error: -10 })
+  if (url.host !== 'ui') return new Response('not found', { status: 404 })
   const rel = url.pathname.replace(/^\/+/, '')
   const allowed = new Set(['splash.html', 'update-dialog.html', 'about.html'])
-  if (!allowed.has(rel)) return callback({ error: -6 })
+  if (!allowed.has(rel)) return new Response('not found', { status: 404 })
   const safe = join(__dirname, rel).replace(/\\/g, '/').replace(/\/{2,}/g, '/')
   const base = __dirname.replace(/\\/g, '/').replace(/\/$/, '')
-  if (!safe.startsWith(base + '/')) return callback({ error: -8 })
-  callback({ path: safe })
+  if (!safe.startsWith(base + '/')) return new Response('forbidden', { status: 403 })
+  return net.fetch(pathToFileURL(safe).toString())
 }
 
 app.enableSandbox()
