@@ -78,6 +78,17 @@ python tools/gen_update_dialog.py   # src/update-dialog.html
 Node ≥ 22（系统级、外部可见，供壳查找 `npx-cli.js`）、pnpm ≥ 9、**Electron ≥ 36**（内置 Node 22）。
 Windows 10/11 x64；全局缓存目录需可读写以访问 `@deepseek-ai/dsh@0.1.7-rc.2`。
 
+> **本壳与 CLI 命令行共用同一套 npm 缓存目录**：壳用 `npx --offline` 复用系统 npm 的 npx 缓存
+> （`%LOCALAPPDATA%\npm-cache\_npx\…`）—— 也就是说"壳里跑的那个 dsh"与你在命令行
+> `npx @deepseek-ai/dsh` 跑的是**同一份缓存**。这是依赖隔离上的差异：官方 Desktop 的做法是
+> **共享数据目录、但隔离可执行包**（自带独立运行时），我们则共用系统 npm 缓存。
+> ⇒ 缓存被清理后需要重新预热，且**预热必须用壳固定的 registry**（默认 `https://registry.npmjs.org`，
+> 可用 `DSH_DESKTOP_NPM_REGISTRY` 覆盖），否则 `--offline` 会因缓存键不一致而 `ENOTCACHED`：
+>
+> ```bash
+> npm_config_registry=https://registry.npmjs.org npx --package=@deepseek-ai/dsh@0.1.7-rc.2 -- dsh --version
+> ```
+
 ## 安装与开发
 
 ```bash
