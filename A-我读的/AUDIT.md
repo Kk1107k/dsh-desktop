@@ -410,3 +410,54 @@ CC 自述首版用包名 pin 是错的（孙进程命令行不含该 pin，永�
 1. 推送本地提交到远端
 2. **用这个新包重装实测**：托盘绿色徽章、UI 完整渲染（肉眼）、卸载流程
 3. 更新链路成功路径 —— 需真实 COS 域名
+
+---
+
+# 五审 · 更新窗口故障链（2026-09-25 18:51）
+
+## 一、用户实测发现（`dist` 上一版）
+
+更新窗口停在静态初始 DOM（"正在检查更新…" + "知道了"），且**点该按钮无反应**。
+
+## 二、故障链共 5 层，真根因在最上游
+
+| 层 | 缺陷 | 修法 |
+|---|---|---|
+| 1 | **页面 `close()` 不关窗**：`dsh:update-close` handler 只调 `updater.close()`，从不触发窗口关闭（SPEC §7:248 要求"窗口 X 与页面 close() 同语义"，只实现了一条） | 判据收敛为 M06 唯一函数 `requestUpdateClose`，X 路径与 M09 handler 共用；M02 注入能力 |
+| 2 | preload 的 bridge-ready 只填缓存、不通知已注册 handler（SPEC §5:181 未实现） | 记录各角色订阅者，桥返回后补发；订阅时若已有缓存也立即补发 |
+| 3 | **payload 形状错**：ipc 发裸快照，SPEC 规定 `update: UpdateEvent = {revision, snapshot}` ⇒ preload 取 `b.update.snapshot` 永远失败 | 由 updater 暴露 `getInternalEvent()`；**并纠正了一条固化了错形状的旧断言（A07 拿错形状当期望值——这正是它长期未被测出的原因）** |
+| 4 | **推送目标错**：`update-state` 发主窗口（主窗口不挂 preload、无人订阅）⇒ 初值以外的推送全丢 | 改发更新窗口（新增 `getUpdate` 依赖） |
+| 5 | ★**真根因**：`readRoleFromEvent` 读 `senderFrame.processArguments`，**真实 Electron 帧上没有该字段** ⇒ splash 与 update 页的 bridge-ready 全被拒 ⇒ preload 直接 return ⇒ 缓存永远空（前 4 层修了也白修） | 改为按 `sender.getURL()` 查主进程登记的白名单（同时堵掉旧实现"信页面参数自行声明角色"的问题，符合 SPEC §9:272）；并给拒绝路径补 warn 日志（原先静默） |
+
+## 三、本轮审计方复核（独立）
+
+| 修复 | 取证 | 结果 |
+|---|---|---|
+| 关闭判据唯一 | `main-window.js:192` 定义、`:261` X 调用、`main.js:277` 注入、`ipc.js:167` 使用；注释"判据只有那一处" | ✅ |
+| 角色来源 | `ipc.js:180-192` 用 `event.sender.getURL()` + `ALLOWED_ROLE_PAGES`；注释**明确禁止改回 `processArguments`** 并写明 mock 为何长期为绿 | ✅ |
+| payload / 推送目标 | `ipc.js:109` `getInternalEvent()`；`:220` `deps.getUpdate()`；`main.js:269` 注入 | ✅ |
+| 菜单 | `main.js:239` `if (app.isPackaged) Menu.setApplicationMenu(null)` | ✅ |
+| 回归 | tsc 0；**55 用例**；产物 84,714,415 B；真机更新窗口已渲染出终态（"检查更新失败：无法连接更新服务" + [关闭][重试]） | ✅ |
+
+## 四、审计方的第 3 次同类漏判（记入）
+
+一审/二审的 A07 项，审计方核过 IPC 授权，**但只核了 `authorize()` 的 URL 白名单**，
+**未核 `readRoleFromEvent` 的取值来源在真实 Electron 中是否有效**。
+
+三次同类漏判的共同形态：**"假件形状"取代了"真实形状"**
+
+1. `allowDowngrade`：假件缺 channel setter 的副作用
+2. 孙进程形态：假件只有单层进程，复刻不出"命令行不含 pin"
+3. `senderFrame.processArguments`：**假件手工伪造了一个真实不存在的字段**，于是"用假件验证真实 API 形状"这条链整体失效
+
+⇒ **新增审计规则**：凡代码读取**第三方运行时对象的字段**（Electron / electron-updater 等），
+必须以该对象在**真实运行时的形状**为准核验，或至少查证该字段是否真实存在；
+假件里的字段必须先证明"真实存在"才可用于验证。
+
+## 五、剩余
+
+1. **页面按钮的关闭路径需人肉点一次**（合成点击未做成）：error 态下点「关闭」或「重试」后再关，窗口应立即消失
+2. 托盘绿色徽章 + UI 完整渲染（肉眼）
+3. 卸载流程
+4. 更新成功路径（需真实 COS 域名）
+5. 推送本地提交
