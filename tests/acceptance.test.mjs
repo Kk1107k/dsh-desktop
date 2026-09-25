@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto'
 import { createServer } from 'node:net'
 import { mkdirSync, mkdtempSync, existsSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve, dirname } from 'node:path'
+import { join, resolve, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
@@ -1534,7 +1534,12 @@ test('A10 electron-builder 配置：NSIS 可选目录、产物入 dist/、归档
   assert.equal(cfg.appId, 'com.dshdesktop.app')
   assert.equal(cfg.productName, 'DSH Desktop')
   assert.equal(cfg.directories.output, 'dist')
-  assert.equal(cfg.artifactName, '${productName}-Setup-${version}.${ext}')
+  assert.equal(cfg.artifactName, 'DSH-Desktop-Setup-${version}.${ext}')
+  // 产物名不得含空格：electron-builder 会把它规范成连字符写进 latest.yml，而 release.mjs
+  // 按元数据名找磁盘文件 ⇒ 带空格会让"同步 COS"在 CI 上失败（本地因缺凭据跑不到那一步）
+  assert.ok(!/\s/.test(cfg.artifactName.replace('${version}', '0.0.0').replace('${ext}', 'exe')),
+    'artifactName 不得含空格（否则 latest.yml 的 path 与磁盘名不一致）')
+  assert.equal(cfg.productName, 'DSH Desktop', 'productName 保持带空格的显示名')
   assert.equal(cfg.nsis.allowToChangeInstallationDirectory, true, '必须是 allowToChangeInstallationDirectory（写错键会被静默忽略）')
   assert.equal(cfg.nsis.oneClick, false)
   assert.equal(cfg.nsis.perMachine, false)
@@ -1596,7 +1601,7 @@ test('A10 签名可降级为未签名构建，但必须留痕（缺证书不再�
 test('A10 release.mjs：上传计划与入口改写（只改路径不改哈希）', async () => {
   const { planUploads, buildCnStableDoc, fileNameOf, resolveBuildInfo } = await import('../tools/release.mjs')
   const dist = mktmp('dsh-a10-dist-')
-  const exeName = 'DSH Desktop-Setup-0.1.0.exe'
+  const exeName = 'DSH-Desktop-Setup-0.1.0.exe'
   const exePath = join(dist, exeName)
   const body = 'fake-installer-bytes'
   writeFileSync(exePath, body, 'utf8')
@@ -1609,12 +1614,24 @@ test('A10 release.mjs：上传计划与入口改写（只改路径不改哈希�
   }
   const plan = await planUploads(doc, '0.1.0', dist)
   assert.equal(plan.length, 2, '安装包 + blockmap')
-  assert.equal(plan[0].key, 'dsh-desktop/0.1.0/DSH Desktop-Setup-0.1.0.exe')
+  assert.equal(plan[0].key, 'dsh-desktop/0.1.0/DSH-Desktop-Setup-0.1.0.exe')
   assert.equal(plan[0].sha512, sha512)
-  assert.equal(plan[1].key, 'dsh-desktop/0.1.0/DSH Desktop-Setup-0.1.0.exe.blockmap')
+  assert.equal(plan[1].key, 'dsh-desktop/0.1.0/DSH-Desktop-Setup-0.1.0.exe.blockmap')
 
   // 哈希不一致 → 拒绝（不虚构）。
   await assert.rejects(planUploads({ ...doc, files: [{ url: exeName, sha512: 'AAAA', size: 5 }] }, '0.1.0', dist))
+
+  // 元数据名与磁盘名不一致（空格 ↔ 连字符）：按磁盘兜底匹配成功 —— 这正是历史上只在 CI 暴露的形态
+  const spacedName = 'DSH Desktop-Setup-0.1.0.exe'   // 元数据里带空格，磁盘上是连字符
+  const sp = await planUploads({ ...doc, files: [{ url: spacedName, sha512, size: Buffer.byteLength(body) }], path: spacedName }, '0.1.0', dist)
+  assert.equal(sp[0].key, `dsh-desktop/0.1.0/${spacedName}`, '上传 key 用元数据名（客户端按它请求）')
+  assert.equal(basename(sp[0].local), 'DSH-Desktop-Setup-0.1.0.exe', '本地文件按磁盘实际名读取')
+
+  // 两边都对不上 → 报错同时给出"元数据里的名字"与"磁盘实际"
+  await assert.rejects(
+    planUploads({ ...doc, files: [{ url: 'DSH-Desktop-Setup-9.9.9.exe', sha512, size: 1 }], path: 'DSH-Desktop-Setup-9.9.9.exe' }, '0.1.0', dist),
+    err => /元数据里的名字 = DSH-Desktop-Setup-9\.9\.9\.exe/.test(err.message) && /磁盘实际 = /.test(err.message),
+    '找不到时必须把两边的名字都打出来')
 
   // 可溯源字段：传入即写入；取不到就不写（不编造）
   const cnMeta = buildCnStableDoc(doc, '0.1.0', { commit: 'abc1234def', dirty: true })
@@ -1628,10 +1645,10 @@ test('A10 release.mjs：上传计划与入口改写（只改路径不改哈希�
   if (info.commit !== undefined) assert.match(info.commit, /^[0-9a-f]{7,40}$/i, 'commit 必须是十六进制，不得编造')
 
   const cn = buildCnStableDoc(doc, '0.1.0')
-  assert.equal(cn.files[0].url, '0.1.0/DSH Desktop-Setup-0.1.0.exe')
-  assert.equal(cn.files[0].path, '0.1.0/DSH Desktop-Setup-0.1.0.exe')
+  assert.equal(cn.files[0].url, '0.1.0/DSH-Desktop-Setup-0.1.0.exe')
+  assert.equal(cn.files[0].path, '0.1.0/DSH-Desktop-Setup-0.1.0.exe')
   assert.equal(cn.files[0].sha512, sha512, '只改路径不改哈希')
-  assert.equal(cn.path, '0.1.0/DSH Desktop-Setup-0.1.0.exe')
+  assert.equal(cn.path, '0.1.0/DSH-Desktop-Setup-0.1.0.exe')
   assert.equal(fileNameOf(`https://example.com/v0.1.0/${encodeURIComponent(exeName)}`), exeName, 'URL 形式的文件名应解码')
   rmSync(dist, { recursive: true, force: true })
 })

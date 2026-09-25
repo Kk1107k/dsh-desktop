@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { createWriteStream } from 'node:fs'
 import { createRequire } from 'node:module'
-import { readFile, mkdtemp, rm, stat, mkdir } from 'node:fs/promises'
+import { readFile, readdir, mkdtemp, rm, stat, mkdir } from 'node:fs/promises'
 import { basename, join, resolve, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -40,6 +40,21 @@ export function fileNameOf(urlOrPath) {
 }
 
 /**
+ * 列出 dist/ 里实际的产物文件（exe / blockmap）。
+ * 用途：元数据里的文件名可能与磁盘不一致（electron-builder 会把空格规范化为连字符），
+ * 纯靠元数据名找文件会在 CI 上才暴露 —— 这里以磁盘为准兜底，并用于报错时打印两边。
+ * @param {string} distDir
+ * @returns {Promise<string[]>}
+ */
+async function listArtifacts(distDir) {
+  const names = await readdir(distDir).catch(() => [])
+  return names.filter(n => /\.exe$|\.exe\.blockmap$/i.test(n)).sort()
+}
+
+/** 把空格统一成连字符，用于"元数据名 ↔ 磁盘名"的容错比对。 */
+const normName = (n) => String(n).replace(/\s+/g, '-')
+
+/**
  * 依据 stable.yml 构建上传计划；本地缺失产物或缺哈希/大小时报错退出（不虚构）。
  * @param {{version:string, files?:Array<{url:string, sha512?:string, size?:number}>, path?:string}} doc
  * @param {string} version
@@ -53,13 +68,31 @@ export async function planUploads(doc, version, distDir) {
   /** @type {Array<{local:string, key:string, sha512:string, size:number}>} */
   const plan = []
   const seen = new Set()
+  /** 元数据名 → 磁盘实际名（兜底解析结果，blockmap 那轮复用） */
+  const resolved = new Map()
   for (const e of entries) {
     const name = fileNameOf(e.url ?? e.path)
     if (!name) throw new Error('stable.yml files[] 存在空 url')
     if (seen.has(name)) continue
     seen.add(name)
-    const local = join(distDir, name)
-    const st = await stat(local).catch(() => { throw new Error(`dist/ 缺失产物: ${name}`) })
+    let local = join(distDir, name)
+    let st = await stat(local).catch(() => null)
+    if (!st) {
+      // 元数据名与磁盘名不一致时按磁盘兜底（历史上：electron-builder 把空格规范化成连字符，
+      // 而 dist/ 上是带空格的原始名 ⇒ 只有 CI 的"同步 COS"才暴露）。比对前把空格统一成连字符。
+      const actual = (await listArtifacts(distDir)).find(n => normName(n) === normName(name))
+      if (actual) {
+        console.warn(`release: 元数据名(${name}) 与磁盘名(${actual}) 不一致，按磁盘名继续`)
+        local = join(distDir, actual)
+        resolved.set(name, actual)
+        st = await stat(local)
+      }
+    }
+    resolved.set(name, resolved.get(name) ?? name)
+    if (!st) {
+      const actual = await listArtifacts(distDir)
+      throw new Error(`dist/ 缺失产物: 元数据里的名字 = ${name}；磁盘实际 = ${actual.length ? actual.join(', ') : '(无 exe/blockmap)'}`)
+    }
     const sha512 = await hashFile(local)
     // 与构建元数据交叉核对，防止上传的不是构建器产出的那份。
     if (e.sha512 && e.sha512 !== sha512) throw new Error(`${name} 与 stable.yml 记录的 sha512 不一致`)
@@ -70,7 +103,8 @@ export async function planUploads(doc, version, distDir) {
   for (const e of entries) {
     const exe = fileNameOf(e.url ?? e.path)
     if (!exe || seen.has(`${exe}.blockmap`)) continue
-    const bm = join(distDir, `${exe}.blockmap`)
+    // 用兜底后的磁盘名找 blockmap（元数据名可能被规范化过）
+    const bm = join(distDir, `${resolved.get(exe) ?? exe}.blockmap`)
     if (await stat(bm).then(() => true, () => false)) {
       seen.add(`${exe}.blockmap`)
       plan.push({ local: bm, key: `${COS_ROOT}/${version}/${exe}.blockmap`, sha512: await hashFile(bm), size: (await stat(bm)).size })
@@ -130,6 +164,41 @@ async function hashFile(file) {
   return createHash('sha512').update(buf).digest('base64')
 }
 
+/**
+ * **本地可跑的校验路径**：只读 `dist/latest.yml` 与 `dist/` 实际文件，构建上传计划并校验
+ * "元数据里的名字 == 磁盘上的名字"，**不需要 COS 凭据、不上传**。
+ *
+ * 为什么要它：产物名不一致这类问题（历史上的"空格 vs 连字符"）只在 CI 的"同步 COS"一步暴露，
+ * 因为 release.mjs 完整流程需要凭据才能跑 —— 本地根本没有能跑到那一步的路径。有了它，本地
+ * `pnpm build` 后跑一次即可拦住。
+ *
+ * 用法：`node tools/release.mjs --plan-only`
+ * @returns {Promise<Array<{local:string, key:string, sha512:string, size:number}>>}
+ */
+export async function planOnly() {
+  const version = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).version
+  const distDir = join(root, 'dist')
+  const metaPath = join(distDir, 'latest.yml')
+  const raw = await readFile(metaPath, 'utf8').catch(() => {
+    throw new Error(`--plan-only: ${metaPath} 不存在（先跑 pnpm build）`)
+  })
+  const doc = YAML.parse(raw)
+  const plan = await planUploads(doc, version, distDir)
+  if (!plan.length) throw new Error('--plan-only: 上传计划为空')
+
+  const metaNames = (doc.files ?? []).map(f => fileNameOf(f.url ?? f.path)).filter(Boolean)
+  const diskNames = (await listArtifacts(distDir))
+  console.log(`--plan-only: 版本 ${version}；元数据 ${metaNames.length} 项 / 计划 ${plan.length} 项 / dist 产物 ${diskNames.length} 个`)
+  for (const p of plan) console.log(`  ${basename(p.local)}  →  ${p.key}`)
+
+  const missing = metaNames.filter(n => !diskNames.some(d => normName(d) === normName(n)))
+  if (missing.length) {
+    throw new Error(`--plan-only: 元数据里的名字在 dist/ 找不到: ${missing.join(', ')}；磁盘实际: ${diskNames.join(', ') || '(无)'}`)
+  }
+  console.log('--plan-only: ✅ 元数据名与磁盘名一致、产物齐全（未读凭据、未上传）')
+  return plan
+}
+
 async function main() {
   const missing = REQUIRED_ENV.filter(k => !process.env[k])
   if (missing.length) {
@@ -186,7 +255,9 @@ async function main() {
 
 const invokedAsScript = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])
 if (invokedAsScript) {
-  main().catch(err => {
+  // `--plan-only`：本地干跑（不读凭据、不上传），用于拦住"元数据名 ≠ 磁盘名"这类只在 CI 暴露的问题。
+  const task = process.argv.includes('--plan-only') ? planOnly() : main()
+  task.catch(err => {
     console.error(`release: ${err?.message || err}`)
     process.exit(1)
   })

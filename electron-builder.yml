@@ -4,7 +4,10 @@ directories:
   output: dist
 asar: true
 compression: maximum
-artifactName: "${productName}-Setup-${version}.${ext}"
+# ⚠ 产物名**不得含空格**：electron-builder 写 latest.yml 时做 URL 安全规范化（空格→连字符），
+# 而 release.mjs 按元数据里的名字去 dist/ 找文件 ⇒ 带空格会让"同步 COS"这一步在 CI 上失败。
+# 这里硬编码连字符，不再用 ${productName}（productName 保持 "DSH Desktop" 作为显示名）。
+artifactName: "DSH-Desktop-Setup-${version}.${ext}"
 files:
   - "src/**"
   - "build/preload.cjs"

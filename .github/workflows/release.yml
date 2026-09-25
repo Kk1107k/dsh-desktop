@@ -98,8 +98,8 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $files = @(
-            (Get-Item "dist/DSH Desktop-Setup-*.exe").FullName
-            (Get-Item "dist/DSH Desktop-Setup-*.exe.blockmap").FullName
+            (Get-Item "dist/DSH-Desktop-Setup-*.exe").FullName
+            (Get-Item "dist/DSH-Desktop-Setup-*.exe.blockmap").FullName
             "dist/latest.yml"
             "dist/stable.yml"
           )
