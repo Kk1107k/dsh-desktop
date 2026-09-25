@@ -596,6 +596,54 @@ test('A09 托盘菜单六项顺序正确；未实现模式禁用且仅标准可�
   assert.equal(currentMode, 'standard')
 })
 
+test('A09 主窗口 close：托盘就绪时 hide 而非 destroy；quitting / 托盘未就绪时放行', async () => {
+  resetElectronStub({})
+  globalThis.__DSH_TEST_WINDOWS__ = []
+  const { createMainWindow } = await import('../src/main-window.js')
+  const flags = { quitting: false, tray: true }
+  const mw = createMainWindow({
+    config: { port: 3080 }, logger: fakeLogger(),
+    isQuitting: () => flags.quitting,
+    isTrayReady: () => flags.tray,
+  })
+  const w = globalThis.__DSH_TEST_WINDOWS__.at(-1)
+  assert.ok(w, '应创建主窗口')
+
+  w.close()
+  assert.equal(w.isDestroyed(), false, '托盘就绪时点 X 不得销毁窗口（SPEC §4）')
+  assert.equal(w.hidden, true, '应 hide 到托盘')
+  assert.ok(mw.win, '控制器仍持有该窗口')
+
+  flags.tray = false
+  w.close()
+  assert.equal(w.isDestroyed(), true, '托盘未就绪时必须放行关闭，避免窗口关不掉')
+  assert.equal(mw.win, null, '销毁后控制器不再持有窗口')
+})
+
+test('A09 托盘唤回：窗口已销毁时经 M06 重建并 show（含最小化还原）', async () => {
+  resetElectronStub({})
+  globalThis.__DSH_TEST_WINDOWS__ = []
+  const { createMainWindow } = await import('../src/main-window.js')
+  const mw = createMainWindow({
+    config: { port: 3080 }, logger: fakeLogger(),
+    isQuitting: () => false,
+    isTrayReady: () => true,
+  })
+  const first = globalThis.__DSH_TEST_WINDOWS__.at(-1)
+  first.destroy()
+  assert.equal(mw.win, null, '销毁后控制器应释放引用')
+
+  assert.equal(mw.ensure(), true, '窗口已销毁时应重建（SPEC §8 第 1 条）')
+  const second = globalThis.__DSH_TEST_WINDOWS__.at(-1)
+  assert.notEqual(second, first, '应是一个新的窗口实例')
+  assert.equal(mw.ensure(), false, '窗口健在时不得重复重建')
+
+  second.minimize()
+  mw.show()
+  assert.equal(second.isMinimized(), false, 'show 前应先 restore')
+  assert.equal(second.shown, true, '应显示窗口')
+})
+
 // ---------------------------------------------------------------------------
 // A10 安装与发布一致性（结构 + 纯函数）
 // ---------------------------------------------------------------------------

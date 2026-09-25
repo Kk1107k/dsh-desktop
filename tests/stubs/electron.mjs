@@ -39,10 +39,18 @@ export const ipcMain = {
   removeHandler(channel) { this.handlers.delete(channel) },
 }
 
-/** BrowserWindow 假件：够 main-window/tray 顶层引用即可，测试不构造真实窗口。 */
+/**
+ * BrowserWindow 假件：够 main-window/tray 顶层引用即可。
+ * 记录销毁/最小化/显示状态，供「关闭→隐藏 / 托盘唤回」用例断言；实例经
+ * globalThis.__DSH_TEST_WINDOWS__ 暴露给测试。
+ */
 export class BrowserWindow extends EventEmitter {
   constructor(_opts) {
     super()
+    this.destroyed = false
+    this.minimized = false
+    this.shown = false
+    this.hidden = false
     this.webContents = Object.assign(new EventEmitter(), {
       session: { webRequest: { onHeadersReceived() {} } },
       setWindowOpenHandler() {},
@@ -50,14 +58,23 @@ export class BrowserWindow extends EventEmitter {
       getURL: () => 'about:blank',
       send() {},
     })
+    ;(globalThis.__DSH_TEST_WINDOWS__ ??= []).push(this)
   }
   loadURL() { return Promise.resolve() }
-  show() {}
+  show() { this.shown = true }
   focus() {}
-  minimize() {}
-  hide() {}
-  isDestroyed() { return false }
-  destroy() {}
+  minimize() { this.minimized = true }
+  restore() { this.minimized = false }
+  hide() { this.hidden = true }
+  isMinimized() { return this.minimized }
+  isDestroyed() { return this.destroyed }
+  /** 模拟点 X：先派发可取消的 'close'，未被 preventDefault 才真正销毁（同 Electron 语义）。 */
+  close() {
+    const e = { defaultPrevented: false, preventDefault() { this.defaultPrevented = true } }
+    this.emit('close', e)
+    if (!e.defaultPrevented) this.destroy()
+  }
+  destroy() { this.destroyed = true; this.emit('closed') }
 }
 
 export const protocol = {
