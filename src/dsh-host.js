@@ -7,9 +7,13 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { dirname, isAbsolute, join } from 'node:path'
 
-// SPEC §6 冻结的 `0.1.7-alpha` 上游从未发布（npm 404）；实测发布的是 0.1.7-alpha.1/.2 与 0.1.7-rc.1/.2，
-// `alpha` dist-tag 指向 0.1.7-alpha.2。取与 tag 及本机 npx 缓存一致的 0.1.7-alpha.2。详见 SPEC §11.1。
-const TARGET_PKG = '@deepseek-ai/dsh@0.1.7-alpha.2'
+// 绑定的上游版本。取值依据官方铁律「Electron 与 @deepseek-ai/dsh 始终使用同一精确版本」：
+// 官方 Desktop 的 apps/desktop/package.json 为 0.1.7-rc.2（文件 sha cc0ce4f0…，经 GitHub API 直读）
+// ⇒ 我们绑定同一版本。⚠ 不要用 `latest`：npm 的 latest 反而更旧（0.1.5-rc.3，见 SPEC §11.1 #1）。
+// ⚠ 区别必须写明：官方那条铁律的前提是"壳 + 内置运行时 + pnpm 是一个**验证过的组合**"；我们的组合是
+//   "壳 + 用户系统 Node + dsh" —— 是**借用版本号的命名规则**表达"绑定哪个 dsh"，
+//   **不是**声称验证了官方那个组合。详见 SPEC §11.1「上游版本升级至 0.1.7-rc.2」。
+const TARGET_PKG = '@deepseek-ai/dsh@0.1.7-rc.2'
 /**
  * 上游就绪行（stdout）：`dsh web: http://127.0.0.1:<port>/?token=<token>`。
  * 实测该版本没有 `/api/health`（`/api/*` 一律先过浏览器鉴权），就绪以本行 + 带 token 的

@@ -3,6 +3,11 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规则。
 
 ## [Unreleased]
+### Changed
+- 绑定上游版本 `@deepseek-ai/dsh` 升至 `0.1.7-rc.2`（依据官方铁律：Desktop 与 dsh 使用同一精确版本，
+  含 rc/alpha/beta 标识）。**壳版本号随之改为与绑定版本完全相同**（原 `0.1.0`）——这是"借用官方
+  版本号命名规则表达绑定关系"，我们的运行时组合（壳 + 用户系统 Node + dsh）与官方不同，不代表
+  验证了官方组合。详见 `B-AI共享/SPEC.md` §11.1。
 
 ## [0.1.0] - 2026-09-24
 ### Added

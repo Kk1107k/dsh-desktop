@@ -47,7 +47,7 @@ if (mode === 'hang') {
   const dies = readNum('die-count')
   const srv = createServer((req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${port}`)
-    // 对齐上游 0.1.7-alpha.2：没有 /api/health；index 需进程 token 换取 cookie。
+    // 对齐上游 0.1.7-rc.2：没有 /api/health；index 需进程 token 换取 cookie。
     if (url.pathname === '/') {
       if (url.searchParams.get('token') === FAKE_TOKEN) {
         res.writeHead(303, { location: './', 'set-cookie': `dsh-auth-fake=v1.fake; Path=/; HttpOnly; SameSite=Strict` })

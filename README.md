@@ -76,7 +76,7 @@ python tools/gen_update_dialog.py   # src/update-dialog.html
 ## 环境要求
 
 Node ≥ 22（系统级、外部可见，供壳查找 `npx-cli.js`）、pnpm ≥ 9、**Electron ≥ 36**（内置 Node 22）。
-Windows 10/11 x64；全局缓存目录需可读写以访问 `@deepseek-ai/dsh@0.1.7-alpha.2`。
+Windows 10/11 x64；全局缓存目录需可读写以访问 `@deepseek-ai/dsh@0.1.7-rc.2`。
 
 ## 安装与开发
 

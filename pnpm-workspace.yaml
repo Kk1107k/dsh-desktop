@@ -1,3 +1,7 @@
+allowBuilds:
+  electron: set this to true or false
+  electron-winstaller: set this to true or false
+  esbuild: set this to true or false
 # pnpm 10.6+ 规定 onlyBuiltDependencies 写在这里（package.json 的 pnpm 字段已迁移）
 # 这三者需要执行 postinstall 原生构建/下载步骤，其余依赖一律拦截
 onlyBuiltDependencies:

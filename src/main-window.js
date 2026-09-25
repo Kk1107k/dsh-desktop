@@ -130,7 +130,7 @@ export function createMainWindow({ config, logger, isQuitting, isTrayReady, onUp
       if (!details.url.startsWith(`http://127.0.0.1:${config.port}/`)) return cb({})
       const res = { responseHeaders: { ...details.responseHeaders } }
       // SPEC §9：上游自带的 CSP 保留并与壳策略共同生效（多重 CSP 为合取，更严格者胜出）。
-      // 实测 0.1.7-alpha.2 不发 CSP（见 §11.1），故此处通常为空。
+      // 实测上游不发 CSP 头（见 §11.1，版本升级后随 8 条重验一并复核），故此处通常为空。
       /** @type {string[]} */
       const upstream = []
       for (const key of Object.keys(res.responseHeaders)) {

@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop",
-  "version": "0.1.0",
+  "version": "0.1.7-rc.2",
   "description": "DSH Desktop - 桌面壳包装官方 CLI npx @deepseek-ai/dsh web",
   "main": "src/main.js",
   "type": "module",

@@ -254,7 +254,7 @@ test('§6 端口残留自愈：只回收"记录过 + 身份核对过"的自己�
 
   // 造"上次崩溃残留"：直接起一个 fixture 占住端口，命令行带本壳固定包名 pin（与真实形态一致）
   const leftover = spawn(process.execPath, [
-    FAKE_NPX, '--yes', '--offline', '--package=@deepseek-ai/dsh@0.1.7-alpha.2', '--', 'dsh', 'web', '--no-open', '--port', String(port),
+    FAKE_NPX, '--yes', '--offline', '--package=@deepseek-ai/dsh@0.1.7-rc.2', '--', 'dsh', 'web', '--no-open', '--port', String(port),
   ], { env: { ...process.env, FAKE_MODE: 'serve', FAKE_STATE_DIR: stateDir }, stdio: 'ignore', windowsHide: true })
   try {
     await waitUntil(() => existsSync(join(stateDir, 'listening')), 8000)
@@ -276,7 +276,7 @@ test('§6 端口残留自愈：只回收"记录过 + 身份核对过"的自己�
     // 正例：记录里存过它（模拟上次就绪时写下的 owner，含身份材料）⇒ 应自愈
     writeFileSync(recordPath, JSON.stringify({
       pid: leftover.pid, port, generation: 0,
-      package: '@deepseek-ai/dsh@0.1.7-alpha.2', ...processIdentity(leftover.pid),
+      package: '@deepseek-ai/dsh@0.1.7-rc.2', ...processIdentity(leftover.pid),
     }), 'utf8')
     const hostB = await createFakeHost({ port, stateDir, ownerRecordPath: recordPath })
     const readyP = waitEvent(hostB, 'ready', null, 20000)
@@ -642,9 +642,13 @@ test('A07 preload 契约：splashAPI / updateAPI 方法名逐字对齐 INTERFACE
 })
 
 test('A07 版本来源：页面不写死版本号；preload 从 --dsh-version 读取', async () => {
+  const pkgVersion = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
   for (const page of ['splash.html', 'update-dialog.html', 'about.html']) {
     const html = readFileSync(join(root, 'src', page), 'utf8')
     assert.ok(!/0\.1\.0/.test(html), `${page} 不应写死版本号`)
+    // 版本号会随上游升级而变（rules: 壳版本 = 绑定的 dsh 版本）⇒ 断言"不得出现当前包版本"，
+    // 比钉死某个字面量更耐升级。
+    assert.ok(!html.includes(pkgVersion), `${page} 不得写死当前包版本 ${pkgVersion}`)
   }
   // about 页不挂 preload（SPEC §9），版本只能走协议响应期替换：占位符必须在，且不得留脚本。
   const about = readFileSync(join(root, 'src', 'about.html'), 'utf8')
