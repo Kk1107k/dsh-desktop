@@ -53,7 +53,7 @@ export class BrowserWindow extends EventEmitter {
     this.hidden = false
     this.webContents = Object.assign(new EventEmitter(), {
       session: { webRequest: { onHeadersReceived() {} } },
-      setWindowOpenHandler() {},
+      setWindowOpenHandler(fn) { this.windowOpenHandler = fn },
       isLoading: () => false,
       getURL: () => 'about:blank',
       send() {},

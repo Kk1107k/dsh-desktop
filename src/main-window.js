@@ -56,6 +56,22 @@ export const LOCAL_PAGE_CSP = (hashes) => [
 ].join('; ')
 
 /**
+ * 本地页窗口的统一围栏（SPEC §9:281/282）：
+ * 只允许停留在自己的 dsh-app 页面（其余导航与重定向一律拦下），禁开新窗、禁嵌 webview。
+ * 本地页的 preload 桥按角色常驻于该窗口，一旦被导航走，新页面会连同桥一起被交出去。
+ * @param {import('electron').BrowserWindow} win
+ * @param {string} allowedUrl 该窗口唯一允许停留的页面 URL
+ */
+export function hardenLocalPageWindow(win, allowedUrl) {
+  /** @param {import('electron').Event} e @param {string} url */
+  const guard = (e, url) => { if (url !== allowedUrl) e.preventDefault() }
+  win.webContents.on('will-navigate', guard)
+  win.webContents.on('will-redirect', guard)
+  win.webContents.on('will-attach-webview', (e) => e.preventDefault())
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+}
+
+/**
  * 创建主窗口控制器。
  * @param {{config:{port:number}, logger:import('./logger.js').Logger, isQuitting?:()=>boolean, isTrayReady?:()=>boolean, onUpdateCloseRequest?:()=>Promise<boolean>}} opts
  * @returns {{win:import('electron').BrowserWindow|null, ensure:()=>boolean, loadURL:(url:string)=>Promise<void>, show:()=>void, openUpdateWindow:()=>void, loaded:boolean, readyToShow:boolean, once:(ev:string,fn:()=>void)=>void}}
@@ -204,6 +220,7 @@ export function createMainWindow({ config, logger, isQuitting, isTrayReady, onUp
       },
     })
     updateWin = newWin
+    hardenLocalPageWindow(newWin, 'dsh-app://ui/update-dialog.html')
     newWin.loadURL('dsh-app://ui/update-dialog.html')
     newWin.once('ready-to-show', () => newWin.show())
     // SPEC §7:248：available 状态下窗口 X 与页面 close() 同语义（都要走 snooze）。

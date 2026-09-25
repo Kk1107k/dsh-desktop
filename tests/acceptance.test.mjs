@@ -693,6 +693,38 @@ test('A09 托盘徽章优先级：update > running > idle（host 健康显绿，
   assert.match(icon(), /^tray\.png$/, 'host 失联/停止应回落 idle（SPEC §6:203）')
 })
 
+test('§9:281/282 本地页围栏：只许停留自己的页面、禁开新窗、禁 webview', async () => {
+  resetElectronStub({})
+  globalThis.__DSH_TEST_WINDOWS__ = []
+  const { createMainWindow } = await import('../src/main-window.js')
+  const mw = createMainWindow({ config: { port: 3080 }, logger: fakeLogger(), isQuitting: () => false, isTrayReady: () => true })
+  mw.openUpdateWindow()
+  const upd = globalThis.__DSH_TEST_WINDOWS__.at(-1)
+  /** 造一个可取消的事件 */
+  const ev = () => ({ defaultPrevented: false, preventDefault() { this.defaultPrevented = true } })
+
+  const ok = ev()
+  upd.webContents.emit('will-navigate', ok, 'dsh-app://ui/update-dialog.html')
+  assert.equal(ok.defaultPrevented, false, '本地页自己的 URL 不得被拦')
+
+  for (const bad of ['https://evil.example/', 'dsh-app://ui/about.html', 'file:///C:/windows/win.ini']) {
+    const e = ev()
+    upd.webContents.emit('will-navigate', e, bad)
+    assert.equal(e.defaultPrevented, true, `应拦下导航：${bad}`)
+  }
+  const redir = ev()
+  upd.webContents.emit('will-redirect', redir, 'https://evil.example/')
+  assert.equal(redir.defaultPrevented, true, '重定向同样要拦')
+
+  const openHandler = upd.webContents.windowOpenHandler
+  assert.ok(openHandler, '应注册 setWindowOpenHandler')
+  assert.equal(openHandler({ url: 'https://evil.example/' }).action, 'deny', '本地页默认 deny 新窗')
+
+  // splash 窗口在 main.js 里创建（非导出），无法在 mock 中构造 ⇒ 源码级断言兜底
+  const mainSrc = readFileSync(join(root, 'src', 'main.js'), 'utf8')
+  assert.match(mainSrc, /hardenLocalPageWindow\(win, 'dsh-app:\/\/ui\/splash\.html'\)/, 'splash 窗口必须装同一围栏')
+})
+
 test('§9:283 权限默认拒绝：session 上的权限请求/检查处理器一律返回 false', async () => {
   const src = readFileSync(join(root, 'src', 'main.js'), 'utf8')
   const at = src.indexOf('function hardenSession')

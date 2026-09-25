@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, copyFil
 import { createHash } from 'node:crypto'
 import { createLogger } from './logger.js'
 import { createDshHost } from './dsh-host.js'
-import { createMainWindow, LOCAL_PAGE_CSP, LOCAL_PARTITION } from './main-window.js'
+import { createMainWindow, LOCAL_PAGE_CSP, LOCAL_PARTITION, hardenLocalPageWindow } from './main-window.js'
 import { createTray } from './tray.js'
 import { createUpdater } from './updater.js'
 import { createIpc, CHANNELS } from './ipc.js'
@@ -335,6 +335,8 @@ function createSplashWindow() {
       additionalArguments: [`--dsh-role=splash`, `--dsh-version=${app.getVersion()}`],
     },
   })
+  // SPEC §9:281/282：本地页只许停留在自己的页面，禁开新窗。
+  hardenLocalPageWindow(win, 'dsh-app://ui/splash.html')
   win.loadURL('dsh-app://ui/splash.html')
   return win
 }
