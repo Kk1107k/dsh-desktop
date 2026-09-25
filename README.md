@@ -28,6 +28,16 @@
 
 ---
 
+## 界面预览
+
+> 三张图放在 `assets/screenshots/`（文件名固定，说明见该目录的 README）；**图未提供前显示为占位**。
+
+| 开机页 | 主窗口 | 托盘菜单 |
+|---|---|---|
+| ![splash](assets/screenshots/splash.png) | ![main-window](assets/screenshots/main-window.png) | ![tray-menu](assets/screenshots/tray-menu.png) |
+
+---
+
 ## 目录说明
 
 ```
