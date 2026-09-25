@@ -45,8 +45,9 @@ export const ipcMain = {
  * globalThis.__DSH_TEST_WINDOWS__ 暴露给测试。
  */
 export class BrowserWindow extends EventEmitter {
-  constructor(_opts) {
+  constructor(opts) {
     super()
+    this.opts = opts
     this.destroyed = false
     this.minimized = false
     this.shown = false

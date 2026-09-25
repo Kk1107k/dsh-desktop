@@ -327,6 +327,10 @@ function createSplashWindow() {
     backgroundColor: '#0f1419',
     webPreferences: {
       preload: join(__dirname, '..', 'build', 'preload.cjs'),
+      // SPEC §9:270「所有窗口均设置」：四项安全开关逐个写明，不依赖 Electron 默认值
+      //（默认值今天恰好安全，但"不依赖默认值"才是这条要求的意思）。
+      webSecurity: true,
+      webviewTag: false,
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,

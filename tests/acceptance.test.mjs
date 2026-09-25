@@ -714,6 +714,30 @@ test('§4:134 主窗口渲染进程崩溃 → 原生错误提示（禁止静默�
   assert.equal(dialog.calls.length, 1, '同一窗口只提示一次，避免崩溃循环弹成串')
 })
 
+test('§9:270 三个窗口都显式写明四项安全开关（不依赖 Electron 默认值）', async () => {
+  resetElectronStub({})
+  globalThis.__DSH_TEST_WINDOWS__ = []
+  const { createMainWindow } = await import('../src/main-window.js')
+  const mw = createMainWindow({ config: { port: 3080 }, logger: fakeLogger(), isQuitting: () => false, isTrayReady: () => true })
+  mw.openUpdateWindow()
+
+  const REQUIRED = { contextIsolation: true, nodeIntegration: false, webSecurity: true, webviewTag: false, sandbox: true }
+  for (const [name, win] of [['主窗口', globalThis.__DSH_TEST_WINDOWS__[0]], ['更新窗口', globalThis.__DSH_TEST_WINDOWS__.at(-1)]]) {
+    const wp = win?.opts?.webPreferences ?? {}
+    for (const [k, v] of Object.entries(REQUIRED)) {
+      assert.equal(wp[k], v, `${name}应显式设置 ${k}: ${v}（当前 ${String(wp[k])}）`)
+    }
+  }
+
+  // splash 窗口由 main.js 的 createSplashWindow 创建（非导出），源码级断言兜底
+  const mainSrc = readFileSync(join(root, 'src', 'main.js'), 'utf8')
+  const at = mainSrc.indexOf('function createSplashWindow')
+  const block = mainSrc.slice(at, mainSrc.indexOf('win.loadURL', at))
+  for (const [k, v] of Object.entries(REQUIRED)) {
+    assert.match(block, new RegExp(`${k}:\\s*${String(v)}`), `splash 窗口应显式设置 ${k}: ${v}`)
+  }
+})
+
 test('§9:281/282 本地页围栏：只许停留自己的页面、禁开新窗、禁 webview', async () => {
   resetElectronStub({})
   globalThis.__DSH_TEST_WINDOWS__ = []
