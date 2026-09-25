@@ -211,6 +211,21 @@ test('A02 端口被占用 → E_PORT_IN_USE，不接管、不杀占用者', asyn
   restore(); rmSync(stateDir, { recursive: true, force: true })
 })
 
+/**
+ * 从 OS 取进程身份材料（创建时间 ticks + 命令行哈希）。
+ * 测试自行获取，而不是调用被测代码 —— 否则等于自证。
+ * @param {number} pid
+ */
+function processIdentity(pid) {
+  const ps = `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { [pscustomobject]@{ t = $p.CreationDate.Ticks; c = $p.CommandLine } | ConvertTo-Json -Compress }`
+  const out = spawnSync('powershell.exe', ['-NoProfile', '-Command', ps], { encoding: 'utf8', windowsHide: true, timeout: 8000 })
+  const parsed = JSON.parse(String(out.stdout ?? '').trim() || 'null')
+  return {
+    ticks: String(parsed.t),
+    cmdSha256: createHash('sha256').update(String(parsed.c ?? ''), 'utf8').digest('hex'),
+  }
+}
+
 test('§6 端口残留自愈：只回收"记录过 + 身份核对过"的自己人；别人的进程照报 E_PORT_IN_USE', async () => {
   const stateDir = mktmp('dsh-reclaim-')
   const restore = setEnv({ FAKE_MODE: 'serve', FAKE_STATE_DIR: stateDir })
@@ -231,8 +246,18 @@ test('§6 端口残留自愈：只回收"记录过 + 身份核对过"的自己�
     assert.ok(existsSync(join(stateDir, 'listening')), '占用者必须仍在服务')
     await hostA.stop()
 
-    // 正例：记录里存过它（模拟上次就绪时写下的 owner）⇒ 应自愈
-    writeFileSync(recordPath, JSON.stringify({ pid: leftover.pid, port, generation: 0, package: '@deepseek-ai/dsh@0.1.7-alpha.2' }), 'utf8')
+    // 负例 2：PID 对但身份材料不符（模拟 PID 重用/别的进程）⇒ 同样不得回收
+    writeFileSync(recordPath, JSON.stringify({ pid: leftover.pid, port, generation: 0, ticks: '1', cmdSha256: 'deadbeef' }), 'utf8')
+    const hostC = await createFakeHost({ port, stateDir, ownerRecordPath: recordPath })
+    await assert.rejects(hostC.start({ generation: 0 }), err => err.code === 'E_PORT_IN_USE', '身份不符不得回收')
+    assert.ok(!processGone(leftover.pid), '身份不符时不得杀')
+    await hostC.stop()
+
+    // 正例：记录里存过它（模拟上次就绪时写下的 owner，含身份材料）⇒ 应自愈
+    writeFileSync(recordPath, JSON.stringify({
+      pid: leftover.pid, port, generation: 0,
+      package: '@deepseek-ai/dsh@0.1.7-alpha.2', ...processIdentity(leftover.pid),
+    }), 'utf8')
     const hostB = await createFakeHost({ port, stateDir, ownerRecordPath: recordPath })
     const readyP = waitEvent(hostB, 'ready', null, 20000)
     await hostB.start({ generation: 0 })

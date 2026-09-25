@@ -4,6 +4,7 @@ import { spawn, execFile, execFileSync } from 'node:child_process'
 import { createServer } from 'node:net'
 import { request } from 'node:http'
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { dirname, isAbsolute, join } from 'node:path'
 
 // SPEC §6 冻结的 `0.1.7-alpha` 上游从未发布（npm 404）；实测发布的是 0.1.7-alpha.1/.2 与 0.1.7-rc.1/.2，
@@ -171,26 +172,37 @@ function findPortOwnerPid(port) {
 }
 
 /**
- * 读一个进程的命令行，用于**身份核对**（只认命令行里带本壳固定包名 pin 的那一个）。
+ * 取一个进程的**身份材料**：创建时间 ticks + 命令行（两者一起才能确认"就是同一个进程实例"）。
+ * 用 PID 单独做身份不够（会重用）；用命令行模式匹配也不够 —— 监听端口的是 dsh 本体（孙进程），
+ * 它的命令行是 npx 缓存路径，不含 `--package=…` 那段 pin，按 pin 匹配会永远核不上。
  * @param {number} pid
- * @returns {string|null}
+ * @returns {{ticks:string, cmd:string}|null}
  */
-function describeProcess(pid) {
+function probeProcess(pid) {
   try {
-    const ps = `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" | Select-Object -First 1 -ExpandProperty CommandLine)`
+    const ps = `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { [pscustomobject]@{ t = $p.CreationDate.Ticks; c = $p.CommandLine } | ConvertTo-Json -Compress }`
     const out = execFileSync('powershell.exe', ['-NoProfile', '-Command', ps], { encoding: 'utf8', windowsHide: true, timeout: 8000 })
-    const cmd = String(out ?? '').trim()
-    return cmd || null
+    const parsed = JSON.parse(String(out ?? '').trim() || 'null')
+    if (!parsed || parsed.t === undefined) return null
+    return { ticks: String(parsed.t), cmd: String(parsed.c ?? '') }
   } catch {
     return null
   }
 }
 
 /**
+ * @param {string} s
+ * @returns {string}
+ */
+function sha256(s) {
+  return createHash('sha256').update(s, 'utf8').digest('hex')
+}
+
+/**
  * 记录"本壳确认过的端口占用者"，供下次启动回收自己崩溃后残留的孙进程。
  * 只写 PID/端口/代次/包名 pin，不含任何凭据。
  * @param {string|null|undefined} path
- * @param {{pid:number, port:number, generation:number}} rec
+ * @param {{pid:number, port:number, generation:number, ticks?:string, cmdSha256?:string}} rec
  */
 function writeOwnerRecord(path, rec) {
   if (!path) return
@@ -203,8 +215,9 @@ function writeOwnerRecord(path, rec) {
 
 /**
  * 读回"本壳上次确认过的端口占用者"记录；缺失或损坏一律返回 null。
+ * 含身份材料（ticks/cmdSha256），回收前必须逐项核对。
  * @param {string|null|undefined} path
- * @returns {{pid:number, port:number, generation:number, package?:string}|null}
+ * @returns {{pid:number, port:number, generation:number, ticks?:string, cmdSha256?:string, package?:string}|null}
  */
 function readOwnerRecord(path) {
   if (!path || !existsSync(path)) return null
@@ -410,8 +423,10 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
     const rec = readOwnerRecord(ownerRecordPath)
     const owner = findPortOwnerPid(port)
     if (!rec || !owner || rec.pid !== owner || rec.port !== port) return false
-    const cmd = describeProcess(owner)
-    if (!cmd || !cmd.includes(TARGET_PKG)) {
+    // 身份核对：必须是**同一个进程实例**（创建时间 ticks 一致）且命令行未变。
+    if (!rec.ticks || !rec.cmdSha256) return false          // 旧记录没有身份材料：不猜，交给上层报占用
+    const info = probeProcess(owner)
+    if (!info || info.ticks !== String(rec.ticks) || sha256(info.cmd) !== rec.cmdSha256) {
       log.warn(`端口 ${port} 被占用，占用者 PID=${owner} 身份与本壳记录不符，不回收（按 §6 交给上层报 E_PORT_IN_USE）`)
       return false
     }
@@ -452,7 +467,10 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
       // SPEC §6：不接管、不杀占用者、不静默换端口。但"本壳上次崩溃残留的自己人"必须先回收 ——
       // 否则重试永远撞自己的残骸（实测线上：崩溃后 dsh 孙进程继续占 3080，两次重试都 E_PORT_IN_USE）。
       if (!(await reclaimOwnLeftover(config.port))) {
-        const err = runtimeError('E_PORT_IN_USE', `端口 ${config.port} 已被占用`)
+        // 报占用时带上占用者 PID：升级过渡期留下的"无身份材料"旧记录无法自愈，
+        // 至少要让日志能指出该清哪一个（人工按 PID 清理，不走批量杀）。
+        const occupant = findPortOwnerPid(config.port)
+        const err = runtimeError('E_PORT_IN_USE', `端口 ${config.port} 已被占用${occupant ? `（占用者 PID=${occupant}）` : ''}`)
         log.error(err.message)
         emit('crashed', { generation, error: err })
         throw err
@@ -585,7 +603,13 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
     // 此时端口占用者已被证明是本壳的子进程（就绪行的 token 就来自它自己的 stdout），
     // 记下它的 PID 供下次启动回收"自己崩溃后残留的孙进程"（见 reclaimOwnLeftover）。
     const ownerPid = findPortOwnerPid(config.port)
-    if (ownerPid) writeOwnerRecord(ownerRecordPath, { pid: ownerPid, port: config.port, generation })
+    const ownerInfo = ownerPid ? probeProcess(ownerPid) : null
+    if (ownerPid && ownerInfo) {
+      writeOwnerRecord(ownerRecordPath, {
+        pid: ownerPid, port: config.port, generation,
+        ticks: ownerInfo.ticks, cmdSha256: sha256(ownerInfo.cmd),
+      })
+    }
     emit('ready', { generation, port: readyInfo?.port ?? config.port })
     scheduleHealthChecks()
     // 稳定 5 分钟后清零重启预算，避免在 ready 阶段一次性清零形成无限重启。
