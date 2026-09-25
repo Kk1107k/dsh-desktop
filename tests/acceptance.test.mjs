@@ -596,6 +596,58 @@ test('A09 托盘菜单六项顺序正确；未实现模式禁用且仅标准可�
   assert.equal(currentMode, 'standard')
 })
 
+test('A09 splash 转场确认接线：finish 之前 close = 取消，之后 close = 转场确认', async () => {
+  resetElectronStub({ isPackaged: false })
+  const { createIpc, CHANNELS } = await import('../src/ipc.js')
+  const calls = { cancel: 0, confirm: 0 }
+  const deps = {
+    logger: fakeLogger(),
+    getSplash: () => ({ isDestroyed: () => false, webContents: { send() {} } }),
+    getMain: () => null,
+    getGeneration: () => 0,
+    setFinishRequested: () => {},
+    onSplashFinishConfirm: () => { calls.confirm++ },
+    onSplashCloseBeforeFinish: () => { calls.cancel++ },
+    updater: null,
+    tray: () => null,
+  }
+  const ipc = createIpc(deps)
+  ipc.register()
+  const { ipcMain } = await import('electron')
+  const call = (ch, ev) => ipcMain.handlers.get(ch)(ev)
+  const frameSplash = { processArguments: ['--dsh-role=splash', '--dsh-version=0.1.0'] }
+  const ev = { sender: { isDestroyed: () => false, getURL: () => 'dsh-app://ui/splash.html', mainFrame: frameSplash }, senderFrame: frameSplash }
+
+  // 发出转场请求之前的 close = 取消启动。
+  await call(CHANNELS.SPLASH_CLOSE, ev)
+  assert.equal(calls.cancel, 1, 'finish 之前 close 应走取消启动路径')
+  assert.equal(calls.confirm, 0)
+
+  // 发出转场请求之后的 close = 转场确认（此前该分支缺失，onSplashFinishConfirm 永不被调用，
+  // 导致主进程的 finishTimer 永不清除、1000ms 兜底必然触发）。
+  ipc.pushSplashFinish()
+  await call(CHANNELS.SPLASH_CLOSE, ev)
+  assert.equal(calls.confirm, 1, 'finish 之后 close 应走转场确认')
+  assert.equal(calls.cancel, 1, '确认后不得再走取消启动路径')
+  ipc.dispose()
+})
+
+test('A09 托盘图标按模块位置解析，且图标文件真实存在', async () => {
+  const src = readFileSync(join(root, 'src', 'tray.js'), 'utf8')
+  assert.ok(!/process\.cwd\(\)/.test(src), '托盘素材路径不得依赖 process.cwd()（安装后 cwd 任意，会静默变空图标）')
+
+  globalThis.__DSH_TEST_TRAYS__ = []
+  const { createTray } = await import('../src/tray.js')
+  createTray({
+    logger: fakeLogger(),
+    onOpen: () => {}, onCheckUpdate: () => {},
+    getRunMode: () => 'standard', setRunMode: () => {}, onQuit: () => {},
+  })
+  const tray = globalThis.__DSH_TEST_TRAYS__.at(-1)
+  assert.ok(tray?.images.length, '托盘应带上图标')
+  assert.ok(existsSync(tray.images[0].path), `托盘图标应真实存在：${tray.images[0].path}`)
+})
+
 test('A09 主窗口 close：托盘就绪时 hide 而非 destroy；quitting / 托盘未就绪时放行', async () => {
   resetElectronStub({})
   globalThis.__DSH_TEST_WINDOWS__ = []

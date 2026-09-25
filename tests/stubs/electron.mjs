@@ -92,9 +92,13 @@ export const session = {
 export const dialog = { showMessageBox: async () => ({ response: 0 }) }
 export const shell = { openExternal: async () => {} }
 
-/** Tray 假件：只记录调用。 */
+/** Tray 假件：记录调用与传入的图标；实例经 globalThis.__DSH_TEST_TRAYS__ 暴露。 */
 export class Tray {
-  constructor(_image) { this.toolTips = []; this.images = [] }
+  constructor(image) {
+    this.toolTips = []
+    this.images = image ? [image] : []
+    ;(globalThis.__DSH_TEST_TRAYS__ ??= []).push(this)
+  }
   setToolTip(t) { this.toolTips.push(t) }
   setContextMenu(_m) {}
   setImage(img) { this.images.push(img) }
