@@ -141,11 +141,15 @@ export function createUpdater(opts) {
 
   function syncTray(next, data) {
     // 与 main.js 注入的回调名对齐：onTraySetState / onTraySetText（接口名不匹配会静默失效）。
-    if (next === 'available' || next === 'downloading') opts.onTraySetState?.('update')
-    else if (next === 'latest') {
-      opts.onTraySetText?.('已检查更新', 5000)
-    } else if (next === 'error') {
-      opts.onTraySetText?.('更新检查失败', 5000)
+    // SPEC §8:264：只有"发现未跳过的新版本或正在下载"用 update 徽章；其余状态交回 host 健康度
+    // 决定（M07 内部按 update > running > idle 推导），所以这里必须显式发 'idle' 清掉更新徽章，
+    // 否则一旦出现过新版本，托盘会永远停在 update 图标、绿色再也不会回来。
+    if (next === 'available' || next === 'downloading') {
+      opts.onTraySetState?.('update')
+    } else {
+      opts.onTraySetState?.('idle')
+      if (next === 'latest') opts.onTraySetText?.('已检查更新', 5000)
+      else if (next === 'error') opts.onTraySetText?.('更新检查失败', 5000)
     }
   }
 

@@ -670,6 +670,29 @@ test('A09 托盘菜单六项顺序正确；未实现模式禁用且仅标准可�
   assert.equal(currentMode, 'standard')
 })
 
+test('A09 托盘徽章优先级：update > running > idle（host 健康显绿，失联回落）', async () => {
+  globalThis.__DSH_TEST_TRAYS__ = []
+  const { createTray } = await import('../src/tray.js')
+  const tray = createTray({
+    logger: fakeLogger(),
+    onOpen: () => {}, onCheckUpdate: () => {},
+    getRunMode: () => 'standard', setRunMode: () => {}, onQuit: () => {},
+  })
+  const inst = globalThis.__DSH_TEST_TRAYS__.at(-1)
+  /** 当前图标文件名 */
+  const icon = () => String(inst.images.at(-1)?.path ?? '').split(/[\\/]/).pop()
+
+  assert.match(icon(), /^tray\.png$/, '启动时为 idle（仅图标本身）')
+  tray.setHostHealthy(true)
+  assert.match(icon(), /^tray-running\.png$/, 'host 健康应显示 running（SPEC §8:264）')
+  tray.setState('update')
+  assert.match(icon(), /^tray-update\.png$/, 'update 优先级高于 running')
+  tray.setState('idle')
+  assert.match(icon(), /^tray-running\.png$/, '更新徽章清除后应按 host 健康度回落 running')
+  tray.setHostHealthy(false)
+  assert.match(icon(), /^tray\.png$/, 'host 失联/停止应回落 idle（SPEC §6:203）')
+})
+
 test('A09 splash 转场确认接线：finish 之前 close = 取消，之后 close = 转场确认', async () => {
   resetElectronStub({ isPackaged: false })
   const { createIpc, CHANNELS } = await import('../src/ipc.js')

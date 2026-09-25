@@ -317,6 +317,8 @@ async function tryStartHost() {
   }
   state.host.on('ready', async ({ generation }) => {
     if (generation !== state.generation) return
+    // SPEC §8:264：host 健康 → 绿色徽章（优先级低于 update，由 M07 内部推导）。
+    state.tray?.setHostHealthy?.(true)
     state.ipc.pushSplashStatus('就绪')
     // 上游 index 需进程 token 换 cookie 后才可访问（SPEC §11.1）：先在同一 session 内完成
     // 交换，再用干净 URL 加载主窗口，避免落到 401 页面。token 不入日志、不进页面契约。
@@ -328,17 +330,21 @@ async function tryStartHost() {
   state.host.on('timeout', ({ generation }) => {
     if (generation !== state.generation) return
     if (state.quitting) return
+    // SPEC §6:203：失联/重启期间取消绿色。
+    state.tray?.setHostHealthy?.(false)
     state.ipc.pushSplashStatus('服务启动超时')
     promptRetryOrExit('服务启动超时，请重试或退出。')
   })
   state.host.on('crashed', ({ generation }) => {
     if (generation !== state.generation) return
     if (state.quitting) return
+    state.tray?.setHostHealthy?.(false)
     state.ipc.pushSplashStatus('服务异常，正在重试…')
   })
   state.host.on('exited', ({ generation }) => {
     if (generation !== state.generation) return
     if (state.quitting) return
+    state.tray?.setHostHealthy?.(false)
     state.ipc.pushSplashStatus('服务已退出，正在重试…')
   })
 }

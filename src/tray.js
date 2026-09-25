@@ -21,6 +21,8 @@ export function createTray({ logger, onOpen, onCheckUpdate, getRunMode, setRunMo
   const log = logger
   /** @type {import('electron').Tray|null} */ let tray = null
   /** @type {'idle'|'update'|'running'} */ let currentState = 'idle'
+  let hasUpdate = false
+  let hostHealthy = false
   /** @type {NodeJS.Timeout|null} */ let flashTimer = null
 
   const iconIdle = nativeImage.createFromPath(join(ASSETS_DIR, STATE_ICON.idle))
@@ -54,15 +56,34 @@ export function createTray({ logger, onOpen, onCheckUpdate, getRunMode, setRunMo
   tray.on('double-click', () => onOpen())
 
   /**
-   * 设置徽章状态。优先级：update > running > idle。
+   * 按 SPEC §8:264 的优先级推导徽章：update > running > idle。
+   * 两个输入分开记，避免"后写者胜"——否则 host ready 会把新版本徽章冲掉，
+   * 或更新结束后 host 明明健康却回不到绿色。§6:203「重启期间取消绿色」由 setHostHealthy(false) 自然成立。
+   */
+  function derive() {
+    const next = hasUpdate ? 'update' : (hostHealthy ? 'running' : 'idle')
+    if (currentState === next) return
+    currentState = next
+    if (next === 'update') tray?.setImage(iconUpdate)
+    else if (next === 'running') tray?.setImage(iconRunning)
+    else tray?.setImage(iconIdle)
+  }
+
+  /**
+   * 设置徽章状态（更新侧来源）。'update' = 有新版本或正在下载；'idle' = 不再需要 update 徽章。
    * @param {'idle'|'update'|'running'} s
    */
   function setState(s) {
-    if (currentState === s) return
-    currentState = s
-    if (s === 'update') tray?.setImage(iconUpdate)
-    else if (s === 'running') tray?.setImage(iconRunning)
-    else tray?.setImage(iconIdle)
+    if (s === 'update') hasUpdate = true
+    else if (s === 'running') hostHealthy = true
+    else hasUpdate = false
+    derive()
+  }
+
+  /** host 健康度输入：ready 置 true，失联/停止/重启期间置 false。 */
+  function setHostHealthy(v) {
+    hostHealthy = !!v
+    derive()
   }
 
   function getState() { return currentState }
@@ -84,5 +105,5 @@ export function createTray({ logger, onOpen, onCheckUpdate, getRunMode, setRunMo
     tray = null
   }
 
-  return { setState, getState, setFlashText, destroy }
+  return { setState, setHostHealthy, getState, setFlashText, destroy }
 }
