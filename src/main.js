@@ -106,12 +106,10 @@ if (!gotLock) {
 } else {
   app.on('second-instance', () => {
     if (state.quitting) return
-    if (state.main?.win && !state.main.win.isDestroyed()) {
-      state.main.win.show()
-      state.main.win.focus()
-    } else if (state.splash && !state.splash.isDestroyed()) {
-      state.splash.focus()
-    }
+    if (state.main?.win && !state.main.win.isDestroyed()) { state.main.show(); return }
+    if (state.splash && !state.splash.isDestroyed()) { state.splash.focus(); return }
+    // 主窗口已销毁且非退出中：走与托盘同一条重建路径（SPEC §8 第 1 条），而不是静默空转。
+    void reopenMainWindow()
   })
 
   app.whenReady().then(bootstrap).catch(err => {
