@@ -531,14 +531,45 @@ test('A07 preload 契约：splashAPI / updateAPI 方法名逐字对齐 INTERFACE
 })
 
 test('A07 版本来源：页面不写死版本号；preload 从 --dsh-version 读取', async () => {
-  for (const page of ['splash.html', 'update-dialog.html']) {
+  for (const page of ['splash.html', 'update-dialog.html', 'about.html']) {
     const html = readFileSync(join(root, 'src', page), 'utf8')
     assert.ok(!/0\.1\.0/.test(html), `${page} 不应写死版本号`)
   }
+  // about 页不挂 preload（SPEC §9），版本只能走协议响应期替换：占位符必须在，且不得留脚本。
+  const about = readFileSync(join(root, 'src', 'about.html'), 'utf8')
+  assert.ok(about.includes('__APP_VERSION__'), 'about 页应保留版本占位符供主进程替换')
+  assert.ok(!/<script/i.test(about), 'about 页不应有脚本（其 meta CSP 的 script-src 不含 inline/哈希，脚本必被挡）')
   const preload = readFileSync(join(root, 'src', 'preload.js'), 'utf8')
   assert.ok(preload.includes('--dsh-version='), '版本应来自 additionalArguments')
   // 版本随 package.json 同步：构建产物存在即由 preload 缓存提供。
   assert.ok(existsSync(join(root, 'build', 'preload.cjs')), 'build/preload.cjs 应已生成（先跑 pnpm build:preload）')
+})
+
+test('A07 about 页版本：协议响应期替换占位符，不依赖脚本执行（D4）', async () => {
+  resetElectronStub({ version: '9.9.9' })
+  const { renderLocalPage, handleDshAppRequest } = await import('../src/main.js')
+
+  // 纯函数语义：只做精确占位符替换，其余文本原样。
+  assert.equal(renderLocalPage('<span>__APP_VERSION__</span>', '1.2.3'), '<span>1.2.3</span>')
+  assert.equal(renderLocalPage('无占位符的文本', '1.2.3'), '无占位符的文本', '不含占位符的文本不得被改写')
+
+  // 走真实处理器：白名单页面 → 替换成 app.getVersion()，并仍带本地页 CSP。
+  const res = await handleDshAppRequest(new Request('dsh-app://ui/about.html'))
+  assert.equal(res.status, 200)
+  const html = await res.text()
+  assert.ok(html.includes('9.9.9'), '应替换为 app.getVersion()')
+  assert.ok(!html.includes('__APP_VERSION__'), '不得残留占位符')
+  assert.match(res.headers.get('content-type') ?? '', /text\/html/, 'Content-Type 应为 text/html')
+  const csp = res.headers.get('content-security-policy') ?? ''
+  const scriptSrc = csp.split('script-src')[1]?.split(';')[0] ?? ''
+  assert.match(scriptSrc, /'self'/, "about 页 script-src 应保留 'self'")
+  assert.ok(!/sha256-/.test(csp), 'about 页已无 inline script，哈希列表应为空')
+  assert.ok(!/unsafe-(eval|inline)/.test(scriptSrc), '不得为显示版本而放宽 script-src')
+
+  // 非白名单路径：不替换、直接 404（替换范围不外溢）。
+  const bad = await handleDshAppRequest(new Request('dsh-app://ui/evil.html'))
+  assert.equal(bad.status, 404, '非白名单路径不得被替换或放行')
+  assert.equal(await bad.text(), 'not found')
 })
 
 // ---------------------------------------------------------------------------

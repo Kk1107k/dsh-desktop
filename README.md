@@ -117,3 +117,7 @@ pnpm dev
 
 见 `B-AI共享/INTERFACE.md`：D1 preload 命名空间、D2 splash 关闭时序、D3 更新"稍后"延后 24h。
 这三项由 Phase 0 的架构 Spec 拍板。
+
+- **about 页无入口（P4 · 文档收尾）**：`src/about.html` 已满足 D4（版本由主进程在协议响应期替换
+  `__APP_VERSION__`，不依赖脚本、不挂 preload），但全仓没有任何菜单/托盘项打开它 —— §8 冻结的
+  "托盘六项菜单"里没有"关于"。是否增加入口留到文档收尾阶段决策。

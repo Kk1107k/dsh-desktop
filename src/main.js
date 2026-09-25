@@ -1,6 +1,6 @@
 // 启动编排唯一入口：所有退出路径必须经 cleanupAndQuit，禁止在别处直接 app.quit。
-import { app, BrowserWindow, dialog, net, protocol, session } from 'electron'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { app, BrowserWindow, dialog, protocol, session } from 'electron'
+import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, copyFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -91,22 +91,33 @@ function registerDshAppProtocol() {
  * @param {Request} request
  * @returns {Promise<Response>}
  */
-/** 页面 inline script 哈希缓存（按绝对路径）。 */
-const inlineHashCache = new Map()
+/** 版本占位符：只在白名单本地页里做精确替换，见 renderLocalPage。 */
+const VERSION_PLACEHOLDER = '__APP_VERSION__'
+/** 允许经 dsh-app 协议访问的壳页面；同一份名单也限定了版本替换的适用范围。 */
+const LOCAL_PAGES = new Set(['splash.html', 'update-dialog.html', 'about.html'])
 
 /**
- * 取页面内所有 inline `<script>` 的 CSP 哈希源（已带单引号），供 script-src 使用。
- * 两个必须踩准的点：
+ * 把本地页文本中的版本占位符替换为给定版本（纯函数，便于直接断言）。
+ * 只做精确占位符替换：不含占位符的文本原样返回，不改写任何其他内容。
+ * @param {string} html
+ * @param {string} version
+ * @returns {string}
+ */
+export function renderLocalPage(html, version) {
+  return html.split(VERSION_PLACEHOLDER).join(version)
+}
+
+/**
+ * 取 HTML 文本里所有 inline `<script>` 的 CSP 哈希源（已带单引号），供 script-src 使用。
+ * 三个必须踩准的点：
  *   1. HTML 解析器会把输入流的 CRLF/CR 规范化为 LF，浏览器取哈希用的是规范化后的文本
  *      （生成产物是 CRLF）—— 不规范化则哈希永不匹配，脚本被自己的 CSP 拦住；
- *   2. CSP 的哈希源必须带单引号，裸串会被 Chromium 判为 "invalid source" 整条忽略。
- * @param {string} absPath
+ *   2. CSP 的哈希源必须带单引号，裸串会被 Chromium 判为 "invalid source" 整条忽略；
+ *   3. **顺序**：哈希必须按"将要发送的文本"算 —— 先替换占位符、再调本函数，不能反。
+ * @param {string} html
  * @returns {string[]} 形如 `'sha256-<base64>'`
  */
-function inlineScriptHashes(absPath) {
-  const cached = inlineHashCache.get(absPath)
-  if (cached) return cached
-  const html = readFileSync(absPath, 'utf8')
+function inlineScriptHashes(html) {
   /** @type {string[]} */
   const hashes = []
   const re = /<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi
@@ -116,7 +127,6 @@ function inlineScriptHashes(absPath) {
     const text = m[1].replace(/\r\n?/g, '\n')
     hashes.push(`'sha256-${createHash('sha256').update(text, 'utf8').digest('base64')}'`)
   }
-  inlineHashCache.set(absPath, hashes)
   return hashes
 }
 
@@ -124,24 +134,27 @@ function inlineScriptHashes(absPath) {
  * dsh-app 请求处理器：仅放行白名单页面，并拒绝任何越出 __dirname 的路径。
  * 注意：protocol.handle 只传 request 且要求返回 Response；旧版 registerFileProtocol 的
  * (request, callback) 形态会让 callback 为 undefined（TypeError: callback is not a function，
- * 表现为 splash 以 ERR_UNEXPECTED 加载失败）。文件经 net.fetch 读取以保留 MIME 与流式。
- * 响应上附加本地页 CSP（SPEC §9：协议响应同时携带同一 CSP，script-src 用实际脚本哈希）。
+ * 表现为 splash 以 ERR_UNEXPECTED 加载失败）。
+ * 响应集中做两件事（都在这里，便于一处审查）：
+ *   1. 版本占位符替换为 app.getVersion()（SPEC D4；about 页不挂 preload，故走响应期注入）；
+ *   2. 下发本地页 CSP（SPEC §9：协议响应同时携带同一 CSP，script-src 用实际脚本哈希）。
  * @param {Request} request
  * @returns {Promise<Response>}
  */
-async function handleDshAppRequest(request) {
+export async function handleDshAppRequest(request) {
   const url = new URL(request.url)
   if (url.host !== 'ui') return new Response('not found', { status: 404 })
   const rel = url.pathname.replace(/^\/+/, '')
-  const allowed = new Set(['splash.html', 'update-dialog.html', 'about.html'])
-  if (!allowed.has(rel)) return new Response('not found', { status: 404 })
+  // 同一份白名单限定两件事：可被协议访问的页面，以及允许做版本替换的范围。
+  if (!LOCAL_PAGES.has(rel)) return new Response('not found', { status: 404 })
   const safe = join(__dirname, rel).replace(/\\/g, '/').replace(/\/{2,}/g, '/')
   const base = __dirname.replace(/\\/g, '/').replace(/\/$/, '')
   if (!safe.startsWith(base + '/')) return new Response('forbidden', { status: 403 })
-  const res = await net.fetch(pathToFileURL(safe).toString())
-  const headers = new Headers(res.headers)
-  headers.set('Content-Security-Policy', LOCAL_PAGE_CSP(inlineScriptHashes(safe)))
-  return new Response(res.body, { status: res.status, headers })
+  // 顺序：先替换占位符、再算哈希，CSP 必须与**实际发送的文本**一致（顺序反了脚本会被自己的 CSP 拦掉）。
+  const body = renderLocalPage(readFileSync(safe, 'utf8'), app.getVersion())
+  const headers = new Headers({ 'content-type': 'text/html; charset=utf-8' })
+  headers.set('Content-Security-Policy', LOCAL_PAGE_CSP(inlineScriptHashes(body)))
+  return new Response(body, { status: 200, headers })
 }
 
 app.enableSandbox()

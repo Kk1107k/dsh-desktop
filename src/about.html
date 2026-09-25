@@ -26,11 +26,10 @@
 <body>
   <div class="logo">D</div>
   <h1>DSH Desktop</h1>
-  <div class="row"><span id="ver">0.1.0</span> · MIT</div>
+  <!-- 版本占位符由主进程在 dsh-app 协议响应期替换为 app.getVersion()（SPEC D4）。
+       这里刻意放在 HTML 文本里而不是脚本里：不依赖脚本执行，因此本页无需放宽
+       meta CSP 的 script-src，版本也不会回落到硬编码兜底值。 -->
+  <div class="row"><span id="ver">__APP_VERSION__</span> · MIT</div>
   <div class="disclaim">本程序是对官方 CLI <code>@deepseek-ai/dsh</code> 的非官方桌面包装，与官方及上游无隶属或背书关系。</div>
-  <script>
-    // 版本号由主进程通过 file 协议静态注入；为避免硬编码漂移，首版直接以 build-time 变量替换。
-    document.getElementById('ver').textContent = '<占位 BUILD_VERSION>';
-  </script>
 </body>
 </html>
