@@ -266,6 +266,9 @@ function createSplashWindow() {
   const win = new BrowserWindow({
     width: 480, height: 320,
     frame: false, resizable: false, minimizable: true, maximizable: false,
+    // SPEC §4「splash 保持在上方淡出」：不置顶的话主窗口一 show 就盖住 splash，
+    // 被遮挡的渲染进程计时器受节流，页面 300ms 淡出后调 close() 会晚于 1000ms 兜底。
+    alwaysOnTop: true,
     transparent: false, show: false, center: true, skipTaskbar: false,
     backgroundColor: '#0f1419',
     webPreferences: {
