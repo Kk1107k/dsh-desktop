@@ -359,6 +359,23 @@ COS 安装包和 blockmap 上传到 `/dsh-desktop/<version>/<文件名>`；固�
 | 关闭命令 | 验证 `dsh shutdown` 是否存在及是否仅停止本壳目标实例；存在全局误停风险时禁止执行，记录为发布阻塞 |
 | 进程归属与绑定地址 | 验证前台运行、包装器生命周期、完整进程树回收及仅绑定 loopback；任何外部暴露或失去归属均阻止发布 |
 | 模式与 UI 兼容性 | 验证模式切换公开能力及 CSP 下的页面功能；缺少模式协议不阻塞标准模式，但其他模式保持禁用 |
+
+#### 实测记录（2026-09-25 · Windows 11 · `@deepseek-ai/dsh@0.1.7-alpha.2` · 外部 Node v24.14.1）
+
+本节只记录实测结果与证据，不修改 §6 冻结文本；壳侧适配是否落到 §6 由后续决策。标记 ✅ 者已适配，⛔ 者未适配、按 §11.1 不得通过 host 验收。
+
+| # | §6 假定 | 实测 | 证据 |
+|---|---|---|---|
+| 1 ✅ | 固定版本 `@deepseek-ai/dsh@0.1.7-alpha` | **该版本从未发布**。已发布 `0.1.7-alpha.1/.2`、`0.1.7-rc.1/.2`；dist-tags：`alpha=0.1.7-alpha.2`、`next=0.1.7-rc.2`、`latest=0.1.5-rc.3`（注意 `latest` 反而更旧）。已改为 `0.1.7-alpha.2` | 联网直查 `npm view @deepseek-ai/dsh@0.1.7-alpha` → 404；`@0.1.7-alpha.2` → 正常 |
+| 2 ⛔ | `DSH_PORT` 注入端口 | **被忽略**。设 `DSH_PORT=3099` 仍绑 `3080`。⇒ `config.port` 对上游无效；改端口即探测错端口。上游公开开关是 `--port` | 探测日志固定打印 `http://127.0.0.1:3080/` |
+| 3 ⛔ | `GET /api/health` → 200 即就绪 | **该路由不存在**。整棵上游包树无 health 路由；`/api/*` 一律先过鉴权：未鉴权 401、鉴权后该路径 404。⇒ 现有 `probeHealth` 永远拿不到 200，必然 15s 超时 | 全树 grep `api/health`/`health` 无命中；`curl /api/health` → 401，带 token → 404 |
+| 4 ⛔ | stderr 出现独立单词 `ready` | **stderr 全空**；无 `ready` 单词。就绪信号在 **stdout**：`[hub] routes mounted (profile=web, loader=provided)` 与 `dsh web: http://127.0.0.1:<port>/?token=<43 位>`（该行同时给出真实端口与进程 token） | stdout/stderr 分流实测 |
+| 5 ⛔ | 主窗口加载 `http://127.0.0.1:<port>/` | `/` 无 token → **401**；`/?token=<t>` → 303。⇒ 按现 URL 加载会得到 401 而非 UI | 同 #3 实测 |
+| 6 ✅ | `dsh web --no-open` | 可用（`[hub] routes mounted` 后正常服务），但 `dsh web --help` 的公开用法写作 `dsh --profile web` | `dsh web --help` 输出 |
+| 7 ✅ | `--offline` + 预置缓存 | `--offline` 需**元数据**缓存命中，其键受 registry 影响：种子与运行时 registry 不一致即 `ENOTCACHED`（表现为 host 起不来）。⇒ 预置缓存必须用运行时同一个 registry | 同 spec/同缓存，项目目录（`.npmrc` 指 npmmirror）失败、换目录（默认 registry）成功 |
+| 8 ⛔ | 完整进程树回收 | 实测：杀掉外层包装进程后，由 `node` 直接跑 `dsh` 的孙进程仍存活并继续占用 3080（复现 `EADDRINUSE: address already in use 127.0.0.1:3080`）。⇒ 回收必须覆盖整棵树 | 二次启动报 `startup failed: 2 required plugins did not activate` |
+
+另记录两条上游可用信息：上游启动失败时**在 stderr 输出多行诊断**（`dsh: startup failed: N required plugins did not activate` + 具体插件错误）后退出，可作失败态识别依据；鉴权模型为「进程 token → 换 cookie」（`authorizeIndex`），token 由上游在启动时自行打印，壳侧无需也不应自造凭据。
 适配仅发生于 M04 的启动、探测和关闭边界；D1–D5、页面方法名、更新源语义及安全约束不得被联调人员静默改写。
 Mock 测试通过只证明壳状态机成立；§12 中涉及真实 host、安装、签名及更新下载的用例必须在目标 Windows 环境通过后才能标记发布完成。
 

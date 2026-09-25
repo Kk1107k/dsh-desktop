@@ -6,7 +6,9 @@ import { request } from 'node:http'
 import { existsSync, readdirSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 
-const TARGET_PKG = '@deepseek-ai/dsh@0.1.7-alpha'
+// SPEC §6 冻结的 `0.1.7-alpha` 上游从未发布（npm 404）；实测发布的是 0.1.7-alpha.1/.2 与 0.1.7-rc.1/.2，
+// `alpha` dist-tag 指向 0.1.7-alpha.2。取与 tag 及本机 npx 缓存一致的 0.1.7-alpha.2。详见 SPEC §11.1。
+const TARGET_PKG = '@deepseek-ai/dsh@0.1.7-alpha.2'
 const HEALTH_INTERVAL_MS = 10000
 const HEALTH_TIMEOUT_MS = 2000
 const PROBE_INTERVAL_MS = 250
