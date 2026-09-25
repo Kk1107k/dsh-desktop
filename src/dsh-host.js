@@ -9,6 +9,16 @@ import { dirname, isAbsolute, join } from 'node:path'
 // SPEC §6 冻结的 `0.1.7-alpha` 上游从未发布（npm 404）；实测发布的是 0.1.7-alpha.1/.2 与 0.1.7-rc.1/.2，
 // `alpha` dist-tag 指向 0.1.7-alpha.2。取与 tag 及本机 npx 缓存一致的 0.1.7-alpha.2。详见 SPEC §11.1。
 const TARGET_PKG = '@deepseek-ai/dsh@0.1.7-alpha.2'
+/**
+ * 上游就绪行（stdout）：`dsh web: http://127.0.0.1:<port>/?token=<token>`。
+ * 实测该版本没有 `/api/health`（`/api/*` 一律先过浏览器鉴权），就绪以本行 + 带 token 的
+ * index 请求为准。token 只从本行实读，不自造、不落日志。详见 SPEC §11.1。
+ */
+const READY_LINE_RE = /^dsh web: (?:http:\/\/127\.0\.0\.1:(\d+)\/)\?token=([A-Za-z0-9_-]+)\s*$/m
+/** 就绪行扫描缓冲上限：用于跨 chunk 拼接匹配，命中后立即丢弃。 */
+const READY_SCAN_BYTES = 4096
+/** 输出中的 token 一律在入库/写日志前遮蔽（token 绝不许进日志）。 */
+const TOKEN_IN_TEXT_RE = /(\?token=)[A-Za-z0-9_-]+/g
 const HEALTH_INTERVAL_MS = 10000
 const HEALTH_TIMEOUT_MS = 2000
 const PROBE_INTERVAL_MS = 250
@@ -199,18 +209,22 @@ function isPortFree(port) {
 }
 
 /**
- * 单次 HTTP GET /api/health，禁止重定向。
+ * 单次 HTTP GET `/?token=<token>`（上游 index 鉴权入口），禁止重定向。
+ * 303 = token 交换成功（上游在该响应上 Set-Cookie）；200 = 已带有效 cookie 的干净 index。
+ * 401/403/404/5xx 一律判为未就绪——不接受未鉴权响应，也不把任意 200 页当健康接口。
  * @param {number} port
- * @returns {Promise<boolean>} true = 200
+ * @param {string} token
+ * @param {number} timeoutMs
+ * @returns {Promise<boolean>}
  */
-function probeHealth(port) {
+function probeIndex(port, token, timeoutMs) {
   return new Promise(resolve => {
     const req = request({
-      host: '127.0.0.1', port, path: '/api/health', method: 'GET',
-      timeout: PROBE_TIMEOUT_MS,
+      host: '127.0.0.1', port, path: `/?token=${token}`, method: 'GET',
+      timeout: timeoutMs,
     }, res => {
       res.resume()
-      resolve(res.statusCode === 200)
+      resolve(res.statusCode === 303 || res.statusCode === 200)
     })
     req.on('timeout', () => { req.destroy(); resolve(false) })
     req.on('error', () => resolve(false))
@@ -264,6 +278,10 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
   let stableResetTimer = null
   let stderrTail = ''
   let stdoutTail = ''
+  /** @type {{port:number, token:string}|null} 就绪行解析结果；token 只存内存，绝不写日志。 */
+  let readyInfo = null
+  /** 跨 chunk 拼接用的就绪行扫描缓冲（原文），命中后立即丢弃。 */
+  let readyScanBuf = ''
 
   /**
    * @param {string} ev
@@ -341,11 +359,49 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
    */
   function appendTail(stream, chunk) {
     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))
-    const tail = (stream === 'stdout' ? stdoutTail : stderrTail) + buf.toString('utf8')
+    const text = buf.toString('utf8')
+    // 先用原文解析就绪行（token 只能实读），入库与写日志一律用遮蔽后的文本。
+    if (stream === 'stdout') captureReadyLine(text)
+    const safeText = text.replace(TOKEN_IN_TEXT_RE, '$1<redacted>')
+    const tail = (stream === 'stdout' ? stdoutTail : stderrTail) + safeText
     const trimmed = tail.length > TAIL_BUFFER_BYTES ? tail.slice(-TAIL_BUFFER_BYTES) : tail
     if (stream === 'stdout') stdoutTail = trimmed; else stderrTail = trimmed
     // 脱敏后写日志，由 logger 进一步遮蔽。
     log.debug?.(`host ${stream}`, trimmed.slice(-512))
+  }
+
+  /**
+   * 从 stdout 实读上游就绪行，取真实端口与进程 token。
+   * 端口与配置不一致时明确报错并保持未就绪（SPEC §6：不静默更换端口）。
+   * @param {string} text
+   */
+  function captureReadyLine(text) {
+    if (readyInfo) return
+    readyScanBuf = (readyScanBuf + text).slice(-READY_SCAN_BYTES)
+    const m = READY_LINE_RE.exec(readyScanBuf)
+    if (!m) return
+    readyScanBuf = ''                      // 原文立即丢弃
+    const port = Number(m[1])
+    const token = m[2]
+    if (port !== config.port) {
+      log.error(`host ready line port mismatch: stdout=${port} config=${config.port}（不静默更换端口）`)
+      return
+    }
+    readyInfo = { port, token }
+    log.info(`host ready line parsed port=${port} token=<redacted>`)
+    scheduleImmediateProbe()
+  }
+
+  /**
+   * 就绪确认：必须先实读到就绪行（真实端口 + token），再以带 token 的 index 请求确认。
+   * 没读到就绪行时不确认——token 不可自造。
+   * @param {number} timeoutMs
+   * @returns {Promise<boolean>}
+   */
+  function confirmHost(timeoutMs) {
+    const info = readyInfo
+    if (!info) return Promise.resolve(false)
+    return probeIndex(info.port, info.token, timeoutMs)
   }
 
   /** @type {NodeJS.Timeout|null} */
@@ -354,7 +410,7 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
     if (immediateProbe) return
     immediateProbe = setTimeout(async () => {
       immediateProbe = null
-      if (state === 'starting' && await probeHealth(config.port)) onReady()
+      if (state === 'starting' && await confirmHost(PROBE_TIMEOUT_MS)) onReady()
     }, 0)
   }
 
@@ -379,7 +435,7 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
     if (probeLoop) clearInterval(probeLoop)
     probeLoop = setInterval(async () => {
       if (state !== 'starting') return
-      if (await probeHealth(config.port)) onReady()
+      if (await confirmHost(PROBE_TIMEOUT_MS)) onReady()
     }, PROBE_INTERVAL_MS)
   }
   function stopProbes() {
@@ -406,7 +462,7 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
     if (healthTimerId) clearInterval(healthTimerId)
     healthTimerId = setInterval(async () => {
       if (state !== 'ready' || stopping) return
-      const ok = await probeHealthWithTimeout(HEALTH_TIMEOUT_MS)
+      const ok = await confirmHost(HEALTH_TIMEOUT_MS)
       if (ok) { consecutiveFails = 0; return }
       consecutiveFails++
       if (consecutiveFails >= 3) {
@@ -423,21 +479,6 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
     if (healthTimerId) { clearInterval(healthTimerId); healthTimerId = null }
     if (stableResetTimer) { clearTimeout(stableResetTimer); stableResetTimer = null }
   }
-  /**
-   * @param {number} timeoutMs
-   * @returns {Promise<boolean>}
-   */
-  function probeHealthWithTimeout(timeoutMs) {
-    return new Promise(resolve => {
-      const req = request({ host: '127.0.0.1', port: config.port, path: '/api/health', method: 'GET', timeout: timeoutMs }, res => {
-        res.resume(); resolve(res.statusCode === 200)
-      })
-      req.on('timeout', () => { req.destroy(); resolve(false) })
-      req.on('error', () => resolve(false))
-      req.end()
-    })
-  }
-
   /**
    * @param {number|null} code
    * @param {string|null} signal

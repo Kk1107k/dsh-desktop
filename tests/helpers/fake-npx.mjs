@@ -12,6 +12,8 @@ const stateDir = process.env.FAKE_STATE_DIR
 const mode = process.env.FAKE_MODE || 'serve'
 const port = Number(process.env.DSH_PORT || 3080)
 const dieTimes = Number(process.env.FAKE_DIE_TIMES || 0)
+/** 夹具固定假 token：dsh-host 只从 stdout 就绪行实读，不参与任何真实鉴权。 */
+const FAKE_TOKEN = 'fake-token-0123456789ABCDEF'
 
 const file = (name) => join(stateDir, name)
 const readNum = (name) => (existsSync(file(name)) ? Number(readFileSync(file(name), 'utf8')) || 0 : 0)
@@ -39,11 +41,25 @@ if (mode === 'hang') {
 } else {
   const dies = readNum('die-count')
   const srv = createServer((req, res) => {
-    if (req.url === '/api/health') { res.writeHead(200); res.end('ok') }
-    else { res.writeHead(404); res.end() }
+    const url = new URL(req.url, `http://127.0.0.1:${port}`)
+    // 对齐上游 0.1.7-alpha.2：没有 /api/health；index 需进程 token 换取 cookie。
+    if (url.pathname === '/') {
+      if (url.searchParams.get('token') === FAKE_TOKEN) {
+        res.writeHead(303, { location: './', 'set-cookie': `dsh-auth-fake=v1.fake; Path=/; HttpOnly; SameSite=Strict` })
+        res.end()
+      } else {
+        res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' })
+        res.end('unauthorized')
+      }
+      return
+    }
+    res.writeHead(404); res.end()
   })
   srv.listen(port, '127.0.0.1', () => {
     writeFileSync(file('listening'), String(startCount))
+    // 对齐上游就绪行（stdout，含真实端口与进程 token）：dsh-host 以本行 + 带 token 的 index 判就绪。
+    process.stdout.write('[hub] routes mounted (profile=web, loader=provided)\n')
+    process.stdout.write(`dsh web: http://127.0.0.1:${port}/?token=${FAKE_TOKEN}\n`)
     if (mode === 'flaky' && dies < dieTimes) {
       // 就绪后自杀（约 800ms，晚于 host 的 250ms 轮询命中，确保先进 ready 再故障）。
       setTimeout(() => { bump('die-count'); process.exit(1) }, 800)

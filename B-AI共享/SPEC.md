@@ -186,15 +186,15 @@ preload 在页面订阅建立后调用内部 `dsh:bridge-ready`，取得状态�
 ```text
 npx @deepseek-ai/dsh web --no-open
 ```
-目标版本固定为 `@deepseek-ai/dsh@0.1.7-alpha`；运行前检查外部 Node ≥22、npm/npx 及该版本的缓存；缺失则报 `E_RUNTIME_MISSING` 或 `E_CLI_MISSING` 并提示准备环境。
+目标版本固定为 `@deepseek-ai/dsh@0.1.7-alpha`；运行前检查外部 Node ≥22、npm/npx 及该版本的缓存；缺失则报 `E_RUNTIME_MISSING` 或 `E_CLI_MISSING` 并提示准备环境。（已被 §11.1 修订：上游从未发布 `0.1.7-alpha`，实取 `0.1.7-alpha.2`。）
 Windows 不以 `shell:false` 直接执行 `npx.cmd`，也不拼接 `cmd /c` 命令；定位外部 Node 安装对应的 `node.exe` 与 `npx-cli.js`，传绝对路径。
 实际调用为 `spawn(nodeExe, [npxCli, "--yes", "--offline", "--package=@deepseek-ai/dsh@0.1.7-alpha", "--", "dsh", "web", "--no-open"], options)`；此映射的兼容性按 §11.1 验证。
 环境覆盖为 `{ ...process.env, DSH_NO_BROWSER: "1", DSH_PORT: String(config.port), ELECTRON_RUN_AS_NODE: "0" }`；默认端口为 3080。
 该环境仅传给外部 Node；禁止把 `process.execPath` 当作 Node。`ELECTRON_RUN_AS_NODE` 的非空值不得被当成 Electron 的可靠“关闭开关”。
 `options` 固定 `shell:false`、`windowsHide:true`、`detached:false`、`stdio:["ignore","pipe","pipe"]`；工作目录为已创建的用户工作目录；保存启动代次及进程身份。
 启动前检查 `127.0.0.1:<port>` 是否已被占用；占用时返回 `E_PORT_IN_USE`，不接管现有服务、不杀占用者、不静默更换端口。
-每 250ms 发起一次 HTTP GET `http://127.0.0.1:<port>/api/health`，单次超时 1000ms；禁止重定向；当前子进程存活且响应 200 后进入 ready。
-stderr 出现独立单词 `ready` 仅触发立即 HTTP 探测，不单独判定成功；接口不存在时不得把任意 HTML 200 页替代为健康接口。
+每 250ms 发起一次 HTTP GET `http://127.0.0.1:<port>/api/health`，单次超时 1000ms；禁止重定向；当前子进程存活且响应 200 后进入 ready。（已被 §11.1 修订：该版本无 `/api/health`，就绪改为「实读 stdout 就绪行 + 带 token 的 index 请求返回 303/200」；250ms 轮询与 15000ms 截止不变。）
+stderr 出现独立单词 `ready` 仅触发立即 HTTP 探测，不单独判定成功；接口不存在时不得把任意 HTML 200 页替代为健康接口。（已被 §11.1 修订：实测 stderr 为空、无 `ready` 词；就绪信号在 stdout。原句后半的约束被保留——确认必须由上游自己发的 token 换来，不接受未鉴权 2xx。）
 每次 spawn 的就绪截止时间为 15000ms；探测请求、定时器和回调均绑定启动代次，旧代次响应不得改变当前状态。
 ready 后每 10s 探测一次，单次超时 2s且禁止重叠；连续三次失败视为失联，先回收本次进程树，再进入重启流程。
 首次启动失败走 §4 对话框；首次 ready 后的非主动退出或失联执行最多五次自动重启，等待依次为 `1s / 2s / 4s / 8s / 8s`。
@@ -376,6 +376,14 @@ COS 安装包和 blockmap 上传到 `/dsh-desktop/<version>/<文件名>`；固�
 | 8 ⛔ | 完整进程树回收 | 实测：杀掉外层包装进程后，由 `node` 直接跑 `dsh` 的孙进程仍存活并继续占用 3080（复现 `EADDRINUSE: address already in use 127.0.0.1:3080`）。⇒ 回收必须覆盖整棵树 | 二次启动报 `startup failed: 2 required plugins did not activate` |
 
 另记录两条上游可用信息：上游启动失败时**在 stderr 输出多行诊断**（`dsh: startup failed: N required plugins did not activate` + 具体插件错误）后退出，可作失败态识别依据；鉴权模型为「进程 token → 换 cookie」（`authorizeIndex`），token 由上游在启动时自行打印，壳侧无需也不应自造凭据。
+
+#### 壳侧适配记录
+
+| 日期 | 项 | 适配内容 | 落点 |
+|---|---|---|---|
+| 2026-09-25 | #1 版本 | `TARGET_PKG` 取 `0.1.7-alpha.2`（上游真实存在的版本，与 `alpha` tag 及 npx 缓存一致） | `src/dsh-host.js` |
+| 2026-09-25 | #3+#4 就绪判据 | 弃用 `/api/health`；改为实读 stdout 就绪行 `dsh web: http://127.0.0.1:<port>/?token=<token>` 取真实端口与 token，再以带 token 的 `GET /` 返回 303/200 确认就绪。收紧条件：仅 loopback、端口必须与 stdout 一致（不一致即明确报错、不静默换端口）、token 只能实读不得自拼、token 在入库与写日志前一律遮蔽。250ms 轮询 / 15000ms 截止 / ready 后 10s 巡检语义不变 | `src/dsh-host.js`（`READY_LINE_RE`、`captureReadyLine`、`confirmHost`、`probeIndex`） |
+| 2026-09-25 | 夹具同步 | `tests/helpers/fake-npx.mjs` 改为**对齐上游形态**：不再提供 `/api/health`，改吐 stdout 就绪行 + 带 token 的 index（303 + Set-Cookie，无 token 401）。夹具此前编码的是 §6 的错误假定，属"mock 通过不等于 host 通过"的实例 | `tests/helpers/` |
 适配仅发生于 M04 的启动、探测和关闭边界；D1–D5、页面方法名、更新源语义及安全约束不得被联调人员静默改写。
 Mock 测试通过只证明壳状态机成立；§12 中涉及真实 host、安装、签名及更新下载的用例必须在目标 Windows 环境通过后才能标记发布完成。
 
