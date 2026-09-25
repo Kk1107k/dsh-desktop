@@ -33,8 +33,21 @@ const FORCE_KILL_GRACE_MS = 2000
 const TAIL_BUFFER_BYTES = 64 * 1024
 
 const MIN_NODE_MAJOR = 22
+/** 环境准备提示：只适用于"运行环境缺失"两类错误，不要挂到别的错误码上。 */
 const RUNTIME_HINT = '环境准备：安装 Node.js ≥ 22（nodejs.org，或 nvm-windows / fnm / volta），'
   + '确保外部 node 在 PATH 可见；npm/npx 随 Node 附带，损坏时重装 Node 即可恢复。'
+/**
+ * 按错误码给提示。此前所有 host 错误都挂 RUNTIME_HINT，于是"端口被占"也让人去装 Node ——
+ * 误导性提示会在排障时浪费用户时间，故按码区分：只有环境缺失类才给环境准备提示。
+ * @type {Record<string,string>}
+ */
+const ERROR_HINTS = {
+  E_RUNTIME_MISSING: RUNTIME_HINT,
+  E_CLI_MISSING: RUNTIME_HINT,
+  E_PORT_IN_USE: '排查：该端口已被占用，壳不会接管、不会杀占用者、也不会静默改端口。'
+    + '请先确认占用者是谁；若上面给出的 PID 与本壳上次崩溃残留一致，可在核对身份后按 PID 结束它'
+    + '（禁止按进程名或端口批量结束）。',
+}
 
 /**
  * @typedef {object} Runtime
@@ -151,7 +164,9 @@ function npxCliCandidates(nodeExe) {
  * @returns {Error & {code:string}}
  */
 function runtimeError(code, message) {
-  const err = /** @type {Error & {code:string}} */ (new Error(`${code}: ${message}。${RUNTIME_HINT}`))
+  const hint = ERROR_HINTS[code]
+  const text = hint ? `${code}: ${message}。${hint}` : `${code}: ${message}`
+  const err = /** @type {Error & {code:string}} */ (new Error(text))
   err.code = code
   return err
 }
@@ -415,7 +430,12 @@ export function createDshHost({ config, logger, locateRuntime: locate = locateRu
    * （SPEC §6：只杀按 PID 树核对过的自己人，禁止按进程名或端口批量杀）：
    *   1. 记录里存过这个 PID（上次就绪时确认过的端口占用者）；
    *   2. 该 PID 现在确实是这个端口的占用者；
-   *   3. 身份核对：其命令行里含本壳固定的包名 pin（防 PID 重用，也防误杀别人的 dsh）。
+   *   3. 身份核对：**创建时间 ticks 与命令行 SHA-256 与记录逐项一致** —— 即确认「同一个进程实例、
+   *      命令行未变」（PID 会被系统重用，单凭 PID 不足以证明身份）。
+   * ⚠ 不要退回"命令行里含本壳包名 pin（`--package=@deepseek-ai/dsh@x.y.z`）"这种判据：
+   *   实测监听端口的是 dsh **孙进程**，其命令行是 npx 缓存路径
+   *   （`"node" "…\_npx\<hash>\…\@deepseek-ai\dsh\lib\bin.js" web --no-open --port <p>`），
+   *   **不含** `--package=` 那段 pin —— 按 pin 匹配永远核不上，自愈会静默失效（已证伪过一次）。
    * @param {number} port
    * @returns {Promise<boolean>} true = 已完成回收且端口确认空闲
    */

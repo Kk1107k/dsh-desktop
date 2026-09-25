@@ -204,8 +204,14 @@ test('A02 端口被占用 → E_PORT_IN_USE，不接管、不杀占用者', asyn
   const occupier = createServer()
   await new Promise(r => occupier.listen(port, '127.0.0.1', r))
   const host = await createFakeHost({ port, stateDir })
-  await assert.rejects(host.start({ generation: 0 }), err => err.code === 'E_PORT_IN_USE')
+  /** @type {Error & {code?:string}} */
+  let portErr = new Error('not thrown')
+  await assert.rejects(host.start({ generation: 0 }), err => { portErr = err; return err.code === 'E_PORT_IN_USE' })
   assert.ok(occupier.listening, '占用者必须存活（不杀占者）')
+  // 文案按码区分：端口冲突不得挂"装 Node"这类无关提示（会把人带偏），且要给出占用者 PID
+  assert.ok(!/安装 Node|环境准备/.test(portErr.message), `端口冲突不该出现环境准备提示：${portErr.message}`)
+  assert.match(portErr.message, /占用者 PID=\d+/, '应报出占用者 PID，便于人工核对')
+  assert.match(portErr.message, /禁止按进程名或端口批量结束/, '应说明禁止批量结束')
   occupier.close()
   await host.stop()
   restore(); rmSync(stateDir, { recursive: true, force: true })
@@ -225,6 +231,18 @@ function processIdentity(pid) {
     cmdSha256: createHash('sha256').update(String(parsed.c ?? ''), 'utf8').digest('hex'),
   }
 }
+
+test('§6 错误提示按码区分：环境准备提示只给"环境缺失"两类', async () => {
+  const src = readFileSync(join(root, 'src', 'dsh-host.js'), 'utf8')
+  const at = src.indexOf('const ERROR_HINTS')
+  assert.ok(at > 0, '应存在按码映射的提示表')
+  const table = src.slice(at, src.indexOf('\n}', at))
+  assert.match(table, /E_RUNTIME_MISSING:\s*RUNTIME_HINT/, 'E_RUNTIME_MISSING 保留环境准备提示')
+  assert.match(table, /E_CLI_MISSING:\s*RUNTIME_HINT/, 'E_CLI_MISSING 保留环境准备提示')
+  const portRow = table.slice(table.indexOf('E_PORT_IN_USE'))
+  assert.ok(!/安装 Node|环境准备/.test(portRow), 'E_PORT_IN_USE 不得挂环境准备提示')
+  assert.match(portRow, /PID/, 'E_PORT_IN_USE 提示应给出按 PID 核对的指引')
+})
 
 test('§6 端口残留自愈：只回收"记录过 + 身份核对过"的自己人；别人的进程照报 E_PORT_IN_USE', async () => {
   const stateDir = mktmp('dsh-reclaim-')
