@@ -15,6 +15,8 @@ export class NsisUpdater extends EventEmitter {
     super()
     this.config = config
     this._channel = config.channel ?? null
+    // 复刻上游：构造 options 里的 allowDowngrade 生效（AppUpdater.js:138）。
+    this.allowDowngrade = config.allowDowngrade ?? false
     this.checkCalls = 0
     this.downloadCalls = 0
     this.quitAndInstallCalled = false
@@ -27,7 +29,12 @@ export class NsisUpdater extends EventEmitter {
    */
   get _cfgKey() { return this.config.provider === 'generic' ? 'cos' : this.config.provider }
   get channel() { return this._channel }
-  set channel(v) { this._channel = v }
+  /**
+   * 复刻上游语义：AppUpdater 的 channel setter 会把 allowDowngrade 强制置 true
+   * （node_modules/electron-updater/out/AppUpdater.js:44）。此前假件只存 channel、没这个副作用，
+   * 导致"赋 channel 后 allowDowngrade 变 true"的真实缺陷在 mock 里完全看不见。
+   */
+  set channel(v) { this._channel = v; this.allowDowngrade = true }
   async checkForUpdates() {
     this.checkCalls++
     const behavior = cfg()[this._cfgKey]?.check

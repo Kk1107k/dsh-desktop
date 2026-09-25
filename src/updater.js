@@ -83,6 +83,10 @@ export function createUpdater(opts) {
       ...baseOpts,
     })
     githubUpdater.channel = 'stable'
+    // SPEC §7:216：channel 赋值之后必须再明确设一次 —— electron-updater 的 channel setter 会把
+    // allowDowngrade 强制置 true（node_modules/electron-updater/out/AppUpdater.js:44，其文档也
+    // 要求"不需要该行为时请在设置 channel 之后显式覆盖"）。只写在构造 options 里会被它覆盖。
+    githubUpdater.allowDowngrade = false
 
     cosUpdater = new NsisUpdater({
       provider: 'generic',
@@ -91,6 +95,8 @@ export function createUpdater(opts) {
       ...baseOpts,
     })
     cosUpdater.channel = 'cn-stable'
+    // 同上：channel 赋值会把 allowDowngrade 置 true，必须在其后重设（SPEC §7:216）。
+    cosUpdater.allowDowngrade = false
 
     wireEvents(githubUpdater, 'github')
     wireEvents(cosUpdater, 'cos')

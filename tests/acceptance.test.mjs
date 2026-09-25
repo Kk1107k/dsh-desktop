@@ -286,6 +286,27 @@ test('A04 GitHub 有新版 → available（含版本与说明），不自动下�
   up.dispose()
 })
 
+test('A05/§7:216 双源实例最终 allowDowngrade=false（channel setter 会把它置 true，必须在赋值后重设）', async () => {
+  // 先证明假件忠实复刻了上游副作用（否则下面的断言是空转）。
+  const { NsisUpdater } = await import('./stubs/electron-updater.mjs')
+  const probe = new NsisUpdater({ provider: 'github', allowDowngrade: false })
+  assert.equal(probe.allowDowngrade, false, '构造 options 里的 allowDowngrade 应生效')
+  probe.channel = 'stable'
+  assert.equal(probe.allowDowngrade, true, '假件必须复刻上游 set channel 置 true 的副作用')
+
+  globalThis.__DSH_TEST_UPDATER__ = {
+    github: { check: (inst) => { inst.emit('update-available', { version: '0.2.0', releaseNotes: '' }) } },
+  }
+  const { up } = await makeUpdater()
+  await up.checkOnce({ manual: true })
+  const [gh, cos] = globalThis.__DSH_TEST_UPDATER__.instances
+  assert.equal(gh.channel, 'stable')
+  assert.equal(cos.channel, 'cn-stable')
+  assert.equal(gh.allowDowngrade, false, 'channel 赋值之后必须重设 allowDowngrade=false（SPEC §7:216）')
+  assert.equal(cos.allowDowngrade, false, '两个实例都要重设')
+  up.dispose()
+})
+
 test('A04 无新版 → latest + 托盘 5s 文字反馈，不新建弹窗', async () => {
   globalThis.__DSH_TEST_UPDATER__ = {
     github: { check: (inst) => { inst.emit('update-not-available') } },
