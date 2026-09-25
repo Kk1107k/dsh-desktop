@@ -128,12 +128,17 @@ export function createMainWindow({ config, logger, isQuitting, isTrayReady }) {
     })
 
     w.once('ready-to-show', () => {
+      log.info('主窗口 ready-to-show 到达')
       self.readyToShow = true
       self.emit?.('ready-to-show')
       // 重建场景：页面就绪即显示，避免用户点了托盘却什么都没出现。
       if (rebuilt && !w.isDestroyed()) { w.show(); w.focus() }
     })
-    w.webContents.on('did-finish-load', () => { self.loaded = true; self.emit?.('loaded') })
+    w.webContents.on('did-finish-load', () => {
+      log.info('主窗口 did-finish-load 到达')
+      self.loaded = true
+      self.emit?.('loaded')
+    })
     w.webContents.on('render-process-gone', (_e, details) => {
       log.error('renderer gone', details)
       // 显示原生错误提示，禁止静默隐藏。

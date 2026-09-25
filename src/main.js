@@ -20,8 +20,10 @@ const SPEC_FADE_MS = 300
 const SPEC_FINISH_TIMEOUT_MS = 1000
 const SPEC_HOST_READY_TIMEOUT_MS = 15000
 const SPEC_MAIN_LOAD_TIMEOUT_MS = 10000
-/** D2 兜底：did-finish-load 后仍未 ready-to-show 时，等这么久就把主窗口显示出来推进转场。 */
+/** D2 第 2 层：did-finish-load 后仍未 ready-to-show 时，等这么久就把主窗口显示出来推进转场。 */
 const SPEC_READY_FALLBACK_MS = 800
+/** D2 第 3 层：门控轮询间隔（有界，到期即 E_UI_LOAD）。 */
+const SPEC_GATE_POLL_MS = 500
 
 /**
  * 装载并校验用户配置；损坏文件留 .corrupt 副本后恢复默认。
@@ -65,6 +67,9 @@ const state = {
   config: null,
   finishRequested: false,
   finishTimer: null,
+  gateTimer: null,
+  gateDeadline: 0,
+  uiErrorShown: false,
 }
 
 /**
@@ -243,10 +248,14 @@ async function bootstrap() {
   // did-finish-load 已到但 ready-to-show 未到时，先把主窗口显示出来让首帧得以绘制。
   // 窗口已设 backgroundColor:#0f1419，不会白闪；且早于 2400ms 门控，用户看不到差别。
   state.main.once('loaded', () => {
+    log.info(`主窗口 did-finish-load 已到，装配 ${SPEC_READY_FALLBACK_MS}ms 兜底定时器（第 2 层）`)
     setTimeout(() => {
       if (state.quitting) return
       if (!state.main?.win || state.main.win.isDestroyed()) return
-      if (state.main.readyToShow) return
+      if (state.main.readyToShow) {
+        log.info('did-finish-load 兜底到期时 ready-to-show 已到（第 1 层已满足），无需干预')
+        return
+      }
       log.warn('ready-to-show 未到，按 did-finish-load 兜底显示')
       state.main.show()
     }, SPEC_READY_FALLBACK_MS)
@@ -324,6 +333,9 @@ async function tryStartHost() {
 function loadMainWindow() {
   if (state.quitting || state.generation !== state.host.currentGeneration()) return
   const url = `http://127.0.0.1:${state.host.port}`
+  // 门控第 3 层的起点放在这里而不是 ready-to-show 上：即使 did-finish-load / ready-to-show
+  // 两个事件都不来，轮询也会启动并在 10s 后走 E_UI_LOAD，不会永久停在 splash。
+  scheduleFinalGate()
   state.main.loadURL(url).then(() => {
     setTimeout(() => {
       if (state.generation !== state.host.currentGeneration()) return
@@ -367,21 +379,54 @@ async function reopenMainWindow() {
   state.main.show()
 }
 
+/**
+ * 转场门控（D2 修订，登记见 SPEC §11.1）——**三层是兜底关系，不是并列条件**：
+ *   第 1 层（主判据）`ready-to-show`：正常情形，主窗口已绘制，转场最平滑。
+ *   第 2 层 `did-finish-load` + 800ms 兜底：ready-to-show 因渲染/驱动抖动不来时，
+ *          先把主窗口显示出来让首帧得以绘出（见 did-finish-load 处的定时器）。
+ *   第 3 层 有界轮询评估：以上都没能把窗口显示出来时，每 500ms 复核一次门控条件；
+ *          到 SPEC_MAIN_LOAD_TIMEOUT_MS 仍未通过 → 走 E_UI_LOAD（重试/退出对话框），
+ *          **绝不允许无限等**。
+ * 任一层让 attemptFinish 通过即完成转场。每次评估都记 gate 日志，便于事后定位卡在哪。
+ */
 function scheduleFinalGate() {
+  if (state.gateTimer) return
   const elapsed = performance.now() - state.t0
   const wait = Math.max(0, SPEC_MIN_SPLASH_MS - elapsed)
-  setTimeout(() => attemptFinish(), wait)
+  state.gateDeadline = performance.now() + SPEC_MAIN_LOAD_TIMEOUT_MS
+  log.info(`转场门控启动：wait=${Math.round(wait)}ms deadline=${SPEC_MAIN_LOAD_TIMEOUT_MS}ms`)
+  state.gateTimer = setTimeout(function poll() {
+    state.gateTimer = null
+    if (state.quitting) return
+    if (attemptFinish()) return
+    if (performance.now() >= state.gateDeadline) {
+      log.error('转场门控到期内未通过，走 E_UI_LOAD')
+      onUiLoadError()
+      return
+    }
+    state.gateTimer = setTimeout(poll, SPEC_GATE_POLL_MS)
+  }, wait)
 }
 
+/**
+ * 评估一次转场条件；通过则发起转场并返回 true。
+ * @returns {boolean}
+ */
 function attemptFinish() {
-  if (state.quitting) return
+  if (state.quitting) return true
+  const hostHealthy = state.host.isHealthy()
+  const mainLoaded = !!state.main?.loaded
+  const readyToShow = !!state.main?.readyToShow
+  const elapsed = Math.round(performance.now() - state.t0)
+  // 每次评估都记一行：卡住时这行直接说明是哪个条件为假。
+  log.info(`gate: hostHealthy=${hostHealthy} mainLoaded=${mainLoaded} readyToShow=${readyToShow} elapsed=${elapsed}`)
   const ok =
-    state.host.isHealthy() &&
-    state.main?.loaded &&
-    state.main?.readyToShow &&
+    hostHealthy &&
+    mainLoaded &&
+    readyToShow &&
     !state.finishRequested &&
-    performance.now() - state.t0 >= SPEC_MIN_SPLASH_MS
-  if (!ok) return
+    elapsed >= SPEC_MIN_SPLASH_MS
+  if (!ok) return false
   state.finishRequested = true
   state.main.show()
   state.ipc.pushSplashFinish()
@@ -392,6 +437,7 @@ function attemptFinish() {
       state.splash.destroy()
     }
   }, SPEC_FINISH_TIMEOUT_MS)
+  return true
 }
 
 function onSplashFinishConfirm() {
@@ -415,6 +461,9 @@ function onSplashCloseBeforeFinish() {
 
 function onUiLoadError() {
   // E_UI_LOAD：禁止 finish，清空代次，旧探测器作废，提供重试。
+  // 门控轮询与 loadMainWindow 的加载看门狗都可能走到这里，同一代次只弹一次对话框。
+  if (state.uiErrorShown) return
+  state.uiErrorShown = true
   state.generation++
   state.ipc.pushSplashStatus('界面加载失败，请重试')
   promptRetryOrExit('界面加载失败，请重试或退出。')
@@ -433,6 +482,7 @@ function promptRetryOrExit(message) {
     if (res.response === 0) {
       state.host.stop().finally(() => {
         state.finishRequested = false
+        state.uiErrorShown = false
         tryStartHost()
       })
     } else {
@@ -460,6 +510,7 @@ async function cleanupAndQuit() {
   state._cleaning = true
   try {
     if (state.finishTimer) { clearTimeout(state.finishTimer); state.finishTimer = null }
+    if (state.gateTimer) { clearTimeout(state.gateTimer); state.gateTimer = null }
     state.updater?.dispose?.()
     state.host?.stop?.()
     state.tray?.destroy?.()
