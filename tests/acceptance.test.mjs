@@ -936,6 +936,34 @@ function loadPreload({ role, bootstrap }) {
   return { exposed, listeners }
 }
 
+test('§9:272/5:165 角色由主进程登记推导：真实帧形状（无 processArguments）也必须放行；伪造参数无效', async () => {
+  resetElectronStub({})
+  const { createIpc, CHANNELS } = await import('../src/ipc.js')
+  const { ipcMain } = await import('electron')
+  const ipc = createIpc({
+    logger: fakeLogger(), getSplash: () => null, getMain: () => null, getUpdate: () => null, getGeneration: () => 0,
+    setFinishRequested: () => {}, onSplashFinishConfirm: () => {}, onSplashCloseBeforeFinish: () => {},
+    updater: null, tray: () => null,
+  })
+  ipc.register()
+  const call = (ch, ev) => ipcMain.handlers.get(ch)(ev)
+  /** 真实形状：帧上**没有** processArguments（旧实现读它 ⇒ 线上被拒） */
+  const realFrame = {}
+  const senderOf = (url) => ({ isDestroyed: () => false, getURL: () => url, mainFrame: realFrame })
+
+  // 真实帧 + 登记过的 URL ⇒ 必须放行（这条用例在旧实现下会失败）
+  const okRes = await call(CHANNELS.BRIDGE_READY, { sender: senderOf('dsh-app://ui/update-dialog.html'), senderFrame: realFrame })
+  assert.equal(okRes.ok, true, '角色必须由主进程登记的 URL 推导，不能依赖帧上的 processArguments')
+
+  // 伪造 processArguments 但 URL 未登记 ⇒ 不得放行（角色不能由参数自行声明）
+  const forgedFrame = { processArguments: ['--dsh-role=splash', '--dsh-version=0.1.0'] }
+  const forgedSender = { isDestroyed: () => false, getURL: () => 'http://127.0.0.1:3080/', mainFrame: forgedFrame }
+  const bad = await call(CHANNELS.BRIDGE_READY, { sender: forgedSender, senderFrame: forgedFrame })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.error.code, 'E_FORBIDDEN', '未登记 URL 一律拒绝，即使帧上伪造了角色参数')
+  ipc.dispose()
+})
+
 test('§5:156/5:181 集成：ipc 的 bridge payload 形状必须能让更新页渲染出终态', async () => {
   resetElectronStub({})
   const { createIpc, CHANNELS } = await import('../src/ipc.js')

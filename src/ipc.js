@@ -91,8 +91,16 @@ export function createIpc(deps) {
     ipcMain.handle(CHANNELS.BRIDGE_READY, async (event) => {
       try {
         const role = readRoleFromEvent(event)
-        if (!role) return fail('E_FORBIDDEN', 'no role registered')
-        if (!authorize(event, role)) return fail('E_FORBIDDEN', 'page not allowed for role')
+        // 拒绝要留痕：bridge-ready 被拒会让页面永远停在静态初始 DOM（无状态可渲染），
+        // 而这在渲染进程侧几乎不可观测 —— 实测排查该故障时就卡在这里。
+        if (!role) {
+          logger.warn(`bridge-ready 被拒：页面 URL 不在任何已登记角色内（url=${event?.sender?.getURL?.() ?? '?'}）`)
+          return fail('E_FORBIDDEN', 'no role registered')
+        }
+        if (!authorize(event, role)) {
+          logger.warn(`bridge-ready 被拒：页面不在角色 ${role} 的白名单内（url=${event?.sender?.getURL?.() ?? '?'}）`)
+          return fail('E_FORBIDDEN', 'page not allowed for role')
+        }
         const bootstrap = {
           version: getElectronApp().getVersion(),
           status: deps.lastSplashStatus ?? '',
@@ -170,11 +178,18 @@ export function createIpc(deps) {
    * @returns {Role|null}
    */
   function readRoleFromEvent(event) {
-    // processArguments 存在于运行时（Electron 26+），typings 未收录，此处显式补型。
-    const frame = /** @type {import('electron').WebFrameMain & {processArguments?:string[]}} */ (event.senderFrame)
-    const argv = frame?.processArguments || []
-    const arg = argv.find(a => typeof a === 'string' && a.startsWith('--dsh-role='))
-    return arg ? /** @type {Role} */ (arg.slice('--dsh-role='.length)) : null
+    // 角色由**主进程登记的页面白名单**推导（SPEC §9:272「桥的可用角色由主进程登记，
+    // 不能由页面参数自行声明」）。sender.getURL() 由主进程侧报告，页面无法伪造。
+    //
+    // ⚠ 不要改回读 `senderFrame.processArguments`：真实 Electron 里该字段读不到
+    // （实测线上：splash 与 update 页的 bridge-ready 全被拒 ⇒ preload 缓存永远空 ⇒
+    // 页面永久停在静态初始 DOM）。它在 mock 里一直"绿"，只因为用例手工伪造了
+    // frame.processArguments —— 真实形状是"帧上没有该字段"。
+    const url = event?.sender?.getURL?.() ?? ''
+    for (const [role, pages] of Object.entries(ALLOWED_ROLE_PAGES)) {
+      if (pages.includes(url)) return /** @type {Role} */ (role)
+    }
+    return null
   }
 
   function getElectronApp() { return app }
