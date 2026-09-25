@@ -1360,6 +1360,37 @@ test('A10 发布流水线：v* tag 触发；顺序为构建→GitHub Releases→
   assert.ok(wf.jobs['build-and-release'].steps.some(s => (s.run || '').includes('stable.yml')), 'stable.yml 从构建元数据生成')
 })
 
+test('A10 签名可降级为未签名构建，但必须留痕（缺证书不再是硬门槛）', async () => {
+  const YAML = require('yaml')
+  const wf = YAML.parse(readFileSync(join(root, '.github', 'workflows', 'release.yml'), 'utf8'))
+  const steps = wf.jobs['build-and-release'].steps
+  const detect = steps.find(s => s.id === 'signing')
+  assert.ok(detect, '应有签名检测步骤（id: signing）')
+  const detectRun = detect.run || ''
+
+  // 不再是硬门槛：缺证书不得拒绝发布（既不许 exit 1，也不许 Write-Error 拒发）
+  assert.ok(!/拒绝发布/.test(detectRun), '缺证书不得再拒绝发布')
+  assert.ok(!/exit\s+1/.test(detectRun), '缺证书不得 exit 1')
+  // 但必须留痕：输出签名状态供后续步骤使用
+  assert.match(detectRun, /signed=false/, '未签名必须显式记录 signed=false')
+  assert.match(detectRun, /signed=true/, '已签名必须显式记录 signed=true')
+  assert.match(detectRun, /未签名构建/, '未签名要有明确措辞（便于日志与 Release note 引用）')
+
+  // 签名分支保留：配了证书仍照常签名
+  const build = steps.find(s => (s.name || '').includes('构建 NSIS'))
+  assert.ok(build, '应有构建步骤')
+  assert.equal(build.env.CSC_LINK, '${{ secrets.CSC_LINK }}', '构建步骤仍须透传 CSC_LINK')
+  assert.equal(build.env.CSC_KEY_PASSWORD, '${{ secrets.CSC_KEY_PASSWORD }}', '构建步骤仍须透传 CSC_KEY_PASSWORD')
+
+  // Release 说明必须写明签名状态；未签名要带 SmartScreen 提示
+  const rel = steps.find(s => (s.name || '').includes('GitHub Releases'))
+  const relRun = rel.run || ''
+  assert.match(relRun, /已签名构建/, 'Release 说明须写明已签名')
+  assert.match(relRun, /未签名构建/, 'Release 说明须写明未签名')
+  assert.match(relRun, /SmartScreen/, '未签名构建须提示 SmartScreen')
+  assert.ok(relRun.includes('gh release edit'), '须把签名状态写回 Release 说明')
+})
+
 test('A10 release.mjs：上传计划与入口改写（只改路径不改哈希）', async () => {
   const { planUploads, buildCnStableDoc, fileNameOf } = await import('../tools/release.mjs')
   const dist = mktmp('dsh-a10-dist-')

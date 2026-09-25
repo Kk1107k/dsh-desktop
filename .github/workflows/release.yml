@@ -1,5 +1,6 @@
 # M11：发布流水线（SPEC §11）。v* tag 触发；顺序固定：
-#   校验 tag == 包版本 → 构建（含签名）→ 上传 GitHub Releases → tools/release.mjs 同步 COS。
+#   校验 tag == 包版本 → 检测签名证书（缺则降级为未签名构建并留痕）→ 构建 → 上传 GitHub Releases
+#   （签名状态写进 Release 说明）→ tools/release.mjs 同步 COS。
 # electron-builder.yml 配置了 github + generic 双 publish 源，构建统一用 --publish never，
 # 由本工作流用 gh CLI 受控上传（否则 electron-builder 会对占位 COS 域名发起上传而失败）。
 # stable.yml 从构建元数据（latest.yml）复制生成，引用相同已签名产物，禁止虚构哈希。
@@ -39,15 +40,20 @@ jobs:
             exit 1
           }
 
-      - name: 校验签名证书已配置
+      - name: 检测签名证书（缺失则降级为未签名构建）
+        id: signing
         shell: pwsh
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
         run: |
-          # SPEC §11：未完成可信签名不得公开自动安装。
+          # 签名可降级，但**必须留痕**：缺证书不再是硬门槛，也绝不允许静默跳过 ——
+          # 否则将来分不清哪一版签了、哪一版没签。签名状态会写进 Release 说明。
           if ([string]::IsNullOrEmpty($env:CSC_LINK)) {
-            Write-Error "未配置 CSC_LINK 签名证书，拒绝发布"
-            exit 1
+            Write-Warning "未配置 CSC_LINK：本次为【未签名构建】，Release 说明会注明 SmartScreen 提示。"
+            "signed=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            Write-Host "已配置 CSC_LINK：本次为【已签名构建】。"
+            "signed=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           }
 
       - name: 安装依赖（锁文件固定）
@@ -101,6 +107,21 @@ jobs:
             gh release upload $tag @files --clobber
           } else {
             gh release create $tag --title "DSH Desktop $tag" --generate-notes @files
+          }
+
+          # 签名状态写进 Release 说明：签了与没签都必须留痕（缺证书已不是硬门槛，但绝不能无声跳过）。
+          $signed = ("${{ steps.signing.outputs.signed }}" -eq "true")
+          if ($signed) {
+            $banner = "> 本版为**已签名构建**。"
+          } else {
+            $banner = "> ⚠ 本版为**未签名构建**：首次运行可能触发 Windows SmartScreen 提示（选「更多信息 → 仍要运行」）。"
+          }
+          $body = (gh release view $tag --json body -q .body)
+          if ($body -notlike "*已签名构建*" -and $body -notlike "*未签名构建*") {
+            ($banner + "`n`n" + $body) | Out-File -FilePath notes.md -Encoding utf8
+            gh release edit $tag --notes-file notes.md
+          } else {
+            Write-Host "Release 说明已含签名状态，跳过。"
           }
 
       - name: 同步 COS（上传版本化二进制 → 回读校验 → 最后更新 cn-stable.yml）
