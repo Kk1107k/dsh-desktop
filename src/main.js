@@ -1,5 +1,5 @@
 // 启动编排唯一入口：所有退出路径必须经 cleanupAndQuit，禁止在别处直接 app.quit。
-import { app, BrowserWindow, dialog, Menu, protocol, session } from 'electron'
+import { app, BrowserWindow, dialog, Menu, protocol, session, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, copyFileSync } from 'node:fs'
@@ -26,12 +26,71 @@ const SPEC_READY_FALLBACK_MS = 800
 const SPEC_GATE_POLL_MS = 500
 
 /**
+ * error 态"手动下载"的默认地址（SPEC §7:251 要求固定地址 + 主进程验证后打开）。
+ * §7:251 原文写的是 `https://<占位官网域名>/download` —— 取真实可用的发布页属**有意偏离**，
+ * 已在 SPEC 该行标注「已被 §11.1 修订」并在 §11.1 登记。
+ */
+const DEFAULT_DOWNLOAD_PAGE_URL = 'https://github.com/Kk1107k/dsh-desktop/releases'
+/**
+ * 允许作为"手动下载"目标的 host 白名单（SPEC §9:282：外部页面仅由主进程在明确用户操作后
+ * 打开 **HTTPS 白名单地址**）。
+ * ⚠ 改 `downloadPageUrl`（config.json）的域名**必须同步这里**，否则一律拒绝打开；
+ *   A10 用例会断言"默认地址的 host 在白名单内"，两边不同步会在 CI 变红。
+ */
+const DOWNLOAD_HOST_ALLOWLIST = ['github.com']
+
+/**
+ * 校验手动下载地址：必须 https 且 host 在白名单内。非法一律拒绝（绝不 shell.openExternal）。
+ * @param {unknown} url
+ * @returns {boolean}
+ */
+export function isAllowedDownloadUrl(url) {
+  if (typeof url !== 'string' || !url) return false
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'https:') return false
+    return DOWNLOAD_HOST_ALLOWLIST.includes(parsed.hostname.toLowerCase())
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 弹出"手动下载 / 关闭"对话框，确认后打开下载页（SPEC §7:251）。
+ * 依赖以参数注入，便于用例断言"非法地址绝不调用 openExternal"。
+ * 调用方**不得 await 到状态机里**（对话框阻塞会卡住更新流程）。
+ * @param {{url:string, confirm?:()=>Promise<number>, openExternal?:(u:string)=>Promise<void>, warn?:(m:string)=>void}} o
+ * @returns {Promise<boolean>} true = 已按要求打开下载页
+ */
+export async function promptManualDownload({ url, confirm, openExternal, warn }) {
+  const warnFn = warn ?? ((m) => log?.error?.(m))
+  if (!isAllowedDownloadUrl(url)) {
+    warnFn(`手动下载地址非法（须 https 且 host 在白名单内），拒绝打开：${url}`)
+    return false
+  }
+  const ask = confirm ?? (() => dialog.showMessageBox({
+    type: 'info',
+    title: 'DSH Desktop',
+    message: '无法连接更新服务',
+    detail: `可在浏览器打开下载页手动下载：\n${url}`,
+    buttons: ['手动下载', '关闭'],
+    defaultId: 0,
+    cancelId: 1,
+  }).then(r => r.response))
+  const choice = await ask()
+  if (choice !== 0) return false
+  if (!isAllowedDownloadUrl(url)) return false       // 二次校验（打开前再确认一次）
+  await (openExternal ?? ((u) => shell.openExternal(u)))(url)
+  return true
+}
+
+/**
  * 装载并校验用户配置；损坏文件留 .corrupt 副本后恢复默认。
- * @returns {{schemaVersion:number, port:number, theme:string, autoCheckIntervalHours:number, runMode:string, skipVersion:string|null}}
+ * @returns {{schemaVersion:number, port:number, theme:string, autoCheckIntervalHours:number, runMode:string, skipVersion:string|null, downloadPageUrl:string}}
  */
 function loadConfig() {
   const cfgPath = join(app.getPath('userData'), 'config.json')
-  const fallback = { schemaVersion: 1, port: 3080, theme: 'system', autoCheckIntervalHours: 6, runMode: 'standard', skipVersion: null }
+  const fallback = { schemaVersion: 1, port: 3080, theme: 'system', autoCheckIntervalHours: 6, runMode: 'standard', skipVersion: null, downloadPageUrl: DEFAULT_DOWNLOAD_PAGE_URL }
   if (!existsSync(cfgPath)) return fallback
   try {
     const raw = readFileSync(cfgPath, 'utf8')
@@ -42,7 +101,13 @@ function loadConfig() {
     const h = Number(parsed.autoCheckIntervalHours) | 0
     if (h < 1 || h > 168) throw new Error('interval out of range')
     if (!['standard', 'ptc', 'minimal', 'creative'].includes(parsed.runMode)) throw new Error('runMode invalid')
-    return { schemaVersion: 1, port, theme: parsed.theme, autoCheckIntervalHours: h, runMode: parsed.runMode, skipVersion: parsed.skipVersion ?? null }
+    // 可选字段 downloadPageUrl：缺失/非法一律回落默认值，**绝不让非法值进入后续流程**
+    //（打开下载页前还会再校验一次，这里是读侧第一道闸）。
+    const downloadPageUrl = isAllowedDownloadUrl(parsed.downloadPageUrl) ? parsed.downloadPageUrl : DEFAULT_DOWNLOAD_PAGE_URL
+    if (parsed.downloadPageUrl !== undefined && downloadPageUrl !== parsed.downloadPageUrl) {
+      log?.warn?.(`downloadPageUrl 非法（须 https 且 host 在白名单内），已回落默认值：${String(parsed.downloadPageUrl)}`)
+    }
+    return { schemaVersion: 1, port, theme: parsed.theme, autoCheckIntervalHours: h, runMode: parsed.runMode, skipVersion: parsed.skipVersion ?? null, downloadPageUrl }
   } catch (err) {
     try {
       const ts = new Date().toISOString().replace(/[:.]/g, '-')
@@ -306,6 +371,11 @@ async function bootstrap() {
     onTraySetText: (t, ms) => state.tray?.setFlashText?.(t, ms),
     onUpdateState: (ev) => state.ipc.pushUpdateState(ev),
     onUpdateOpen: () => state.main?.openUpdateWindow?.(),
+    // SPEC §7:251：双源失败提供"手动下载 / 关闭"。**异步弹、不 await** —— 对话框绝不能串进
+    // 更新状态机（那正是"页面静默不渲染/流程卡死"的同类风险）；每轮失败弹一次由调用点保证。
+    onManualDownloadPrompt: () => {
+      void promptManualDownload({ url: state.config?.downloadPageUrl ?? DEFAULT_DOWNLOAD_PAGE_URL })
+    },
     onHostStopBeforeInstall: () => state.host?.stop(),
     onHostRestartAfterInstall: () => app.relaunch(),
   })

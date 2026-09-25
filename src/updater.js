@@ -65,7 +65,7 @@ function loadSnooze(filePath) {
 
 /**
  * 创建更新控制器。
- * @param {{logger:object, config:object, isPackaged:boolean, cosUrl?:string, onTraySetState:(s:string)=>void, onTraySetText:(t:string, ms?:number)=>void, onUpdateState:(ev:object)=>void, onUpdateOpen:()=>void, onHostStopBeforeInstall:()=>void, onHostRestartAfterInstall:()=>void}} opts
+ * @param {{logger:object, config:object, isPackaged:boolean, cosUrl?:string, onTraySetState:(s:string)=>void, onTraySetText:(t:string, ms?:number)=>void, onUpdateState:(ev:object)=>void, onUpdateOpen:()=>void, onManualDownloadPrompt?:()=>void, onHostStopBeforeInstall:()=>void, onHostRestartAfterInstall:()=>void}} opts
  */
 export function createUpdater(opts) {
   const { logger, config, isPackaged } = opts
@@ -276,6 +276,10 @@ export function createUpdater(opts) {
     clearCheckTimer()
     setPageState('error', { message: '无法连接更新服务' })
     opts.onUpdateOpen()
+    // SPEC §7:251：双源网络失败提供"手动下载 / 关闭"（原生对话框）。
+    // 每轮一次：本函数只由 failSource 在 pageState === 'checking' 时走到，故手动重试再失败会再弹一次。
+    // 异步弹、**不 await** —— 不把对话框串进状态机（阻塞会让更新流程停住）。
+    opts.onManualDownloadPrompt?.()
   }
 
   function onAvailable(source, info) {

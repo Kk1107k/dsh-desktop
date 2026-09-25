@@ -104,11 +104,12 @@ function resetElectronStub(cfg) {
 }
 
 function updaterDeps() {
-  const d = { states: [], opened: 0, trayStates: [], flashes: [], stopBeforeInstall: 0 }
+  const d = { states: [], opened: 0, trayStates: [], flashes: [], stopBeforeInstall: 0, prompts: 0 }
   const deps = {
     logger: fakeLogger(),
     config: { autoCheckIntervalHours: 6 },
     isPackaged: true,
+    onManualDownloadPrompt: () => { d.prompts++ },
     // 备源 feed URL 可注入：默认值是 SPEC 允许的占位符（不是合法 URL，见"备源未配置"用例）。
     // 这里给一个合法地址，让 COS 降级相关的用例仍能真实驱动备源实例。
     cosUrl: 'https://cos.test/dsh-desktop',
@@ -184,6 +185,7 @@ test('A01 loadConfig：合法配置生效；损坏文件恢复默认并留 .corr
   }), 'utf8')
   assert.deepEqual(loadConfig(), {
     schemaVersion: 1, port: 3090, theme: 'dark', autoCheckIntervalHours: 12, runMode: 'ptc', skipVersion: null,
+    downloadPageUrl: 'https://github.com/Kk1107k/dsh-desktop/releases',
   })
   writeFileSync(join(dir, 'config.json'), '{not json', 'utf8')
   const cfg = loadConfig()
@@ -1091,6 +1093,90 @@ test('§8/§9 生产环境移除原生菜单（三窗口一并生效），dev �
   const src = readFileSync(join(root, 'src', 'main.js'), 'utf8')
   assert.match(src, /import \{[^}]*\bMenu\b[^}]*\} from 'electron'/, '应显式 import Menu')
   assert.match(src, /if \(app\.isPackaged\) Menu\.setApplicationMenu\(null\)/, '打包态应移除应用菜单')
+})
+
+test('§7:251 手动下载：地址校验（https + host 白名单）与"只手动下载才 openExternal"', async () => {
+  resetElectronStub({ userData: mktmp('dsh-dl-') })
+  const { isAllowedDownloadUrl, promptManualDownload } = await import('../src/main.js')
+
+  // 校验：https + 白名单 host 才通过
+  assert.equal(isAllowedDownloadUrl('https://github.com/Kk1107k/dsh-desktop/releases'), true)
+  assert.equal(isAllowedDownloadUrl('http://github.com/Kk1107k/dsh-desktop/releases'), false, '非 https 拒绝')
+  assert.equal(isAllowedDownloadUrl('https://evil.example/releases'), false, '不在白名单的 host 拒绝')
+  assert.equal(isAllowedDownloadUrl('https://127.0.0.1/releases'), false, 'IP 拒绝')
+  assert.equal(isAllowedDownloadUrl(undefined), false, '缺失拒绝')
+  assert.equal(isAllowedDownloadUrl('not a url'), false, '非法串拒绝')
+
+  const opened = []
+  const warns = []
+  const openExternal = async (u) => { opened.push(u) }
+  const warn = (m) => { warns.push(m) }
+
+  // 非法地址：拒绝打开 + 记日志（绝不 shell.openExternal）
+  const bad = await promptManualDownload({ url: 'https://evil.example/x', confirm: async () => 0, openExternal, warn })
+  assert.equal(bad, false)
+  assert.deepEqual(opened, [], '非法地址绝不打开')
+  assert.ok(warns.length > 0, '非法地址必须留痕')
+
+  // 合法 + 确认「手动下载」：打开
+  const ok = await promptManualDownload({ url: 'https://github.com/Kk1107k/dsh-desktop/releases', confirm: async () => 0, openExternal, warn })
+  assert.equal(ok, true)
+  assert.deepEqual(opened, ['https://github.com/Kk1107k/dsh-desktop/releases'])
+
+  // 合法 + 选「关闭」：不打开
+  const closed = await promptManualDownload({ url: 'https://github.com/Kk1107k/dsh-desktop/releases', confirm: async () => 1, openExternal, warn })
+  assert.equal(closed, false)
+  assert.equal(opened.length, 1, '选关闭时不得打开')
+})
+
+test('§7:251 error 态弹窗：每轮失败弹一次；手动重试再失败会再弹', async () => {
+  globalThis.__DSH_TEST_UPDATER__ = {
+    github: { check: (inst) => { inst.emit('error', new Error('ETIMEDOUT')) } },
+    cos: { check: (inst) => { inst.emit('error', new Error('ECONNRESET')) } },
+  }
+  const { up, d } = await makeUpdater()
+  await up.checkOnce({ manual: true })
+  await waitUntil(() => d.states.some(s => s.snapshot.state === 'error'))
+  assert.equal(d.prompts, 1, '进入"无法连接更新服务"应弹一次手动下载对话框')
+  assert.equal(d.opened >= 1, true, '同时仍要打开/复用更新窗口')
+  await sleep(150)
+  assert.equal(d.prompts, 1, '同一轮不得重复弹')
+
+  // 手动重试 → 再次失败 → 应再弹一次
+  await up.checkManual()
+  await waitUntil(() => d.prompts === 2, 5000)
+  assert.equal(d.prompts, 2, '手动重试再次失败应再弹一次')
+  up.dispose()
+})
+
+test('§7:251/§10 downloadPageUrl 配置：缺失或非法一律回落默认（读侧第一道闸）', async () => {
+  const dir = mktmp('dsh-dlcfg-')
+  resetElectronStub({ userData: dir })
+  const { loadConfig } = await import('../src/main.js')
+  const DEFAULT = 'https://github.com/Kk1107k/dsh-desktop/releases'
+  const base = { schemaVersion: 1, port: 3080, theme: 'system', autoCheckIntervalHours: 6, runMode: 'standard', skipVersion: null }
+
+  writeFileSync(join(dir, 'config.json'), JSON.stringify(base), 'utf8')
+  assert.equal(loadConfig().downloadPageUrl, DEFAULT, '缺失时回落默认')
+
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ ...base, downloadPageUrl: 'http://insecure.example/x' }), 'utf8')
+  assert.equal(loadConfig().downloadPageUrl, DEFAULT, '非 https 必须回落默认，不得让非法值进入流程')
+
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ ...base, downloadPageUrl: 'https://cos.example/dsh' }), 'utf8')
+  assert.equal(loadConfig().downloadPageUrl, DEFAULT, '不在 host 白名单内也必须回落（改域名要同步白名单常量）')
+
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ ...base, downloadPageUrl: DEFAULT }), 'utf8')
+  assert.equal(loadConfig().downloadPageUrl, DEFAULT, '合法值原样生效')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('§7:251 默认下载地址的 host 必须在白名单内（改一处不改另一处会在此变红）', async () => {
+  const src = readFileSync(join(root, 'src', 'main.js'), 'utf8')
+  const url = /const DEFAULT_DOWNLOAD_PAGE_URL = '([^']+)'/.exec(src)?.[1]
+  const allow = /const DOWNLOAD_HOST_ALLOWLIST = \[([^\]]*)\]/.exec(src)?.[1] ?? ''
+  assert.ok(url, '应存在默认下载地址常量')
+  const host = new URL(url).hostname
+  assert.ok(allow.includes(`'${host}'`), `默认地址 host=${host} 必须出现在 DOWNLOAD_HOST_ALLOWLIST 里（当前：${allow}）`)
 })
 
 test('A05 终态复位：连续两次检查都能开始（第二次不得 E_BUSY）', async () => {
