@@ -191,3 +191,36 @@ partition 双注册、`hardenSession` 双 session 安装、托盘双输入 deriv
 - 遗留为 P2 清单（16 条，已列 §二）与"需真实环境"清单（§三）——不阻塞、择期清理。
 - ⚠️ `dist/` 安装包落后于源码（不含这 7 笔修复），**发布或装机前必须重新构建**（带
   `ELECTRON_MIRROR` 与 `ELECTRON_BUILDER_BINARIES_MIRROR` 两个环境变量）。
+
+---
+
+# 三审 / 改判（2026-09-25 15:56）
+
+## 一、7 条 P1 修复复核（审计方独立核验）
+
+| # | 复核点 | 结果 |
+|---|---|---|
+| 1 | channel 赋值**之后**重设 `allowDowngrade=false`（两个实例） | ✅ `updater.js:85-87`、`:97-99`（注释引 electron-updater 源码行号） |
+| 4 | 托盘 running 徽章接线 | ✅ 拆两输入（hasUpdate/hostHealthy）+ `derive()`，避免"后写者胜"；并补上 updater 从不发 `'idle'` 的连带缺口 |
+| 5 | 渲染崩溃原生提示 | ✅ `main-window.js:168-173` 补 `dialog.showMessageBox`，且"同一窗口只提示一次"防弹窗风暴 |
+| 6 | 权限默认拒绝 | ✅ `main.js:165-168` `hardenSession()`：RequestHandler + CheckHandler 均返回 false |
+| 7 | **session 分离（最高风险项）** | ✅ **主窗口留在默认 session**（token→cookie 未被隔离）；本地页走 `dsh-local`；**partition 内额外注册了一次 `dsh-app` 协议**（`main.js:226` + `:228`）——这个连带坑已处理，否则本地页整页加载失败 |
+| 8 | 本地页导航围栏（含 P2 #22） | ✅ `hardenLocalPageWindow()` 应用到 splash（`main.js:339`）与更新窗口（`main-window.js:234`），含 will-navigate/will-redirect/webview/window-open deny |
+| 9 | 更新窗口 X 落 snooze | ✅ 拦截后按注入结果处置：`close()` 返回 ok 才放行，`E_IO` 保留窗口 + 原生提示 |
+
+**测试**：新增 6 条，**44/44**（本机复跑 43/44，失败项仍为 A10 —— 已确证的本机 `spawnSync` 假象）。
+**tsc**：0 错。
+**真机**：两组均转场完成、CSP 违规 0、控制台 ERROR 0、主窗口加载正常（非 401）。
+
+## 二、改判结论
+
+> ✅ **代码层终审通过**（P0 = 0，P1 = 0）。
+>
+> 剩余 16 条 P2 全部登记、不阻塞；其中 #2 / #3 按终裁缓至发布准备期。
+> **仍需真实环境的验证**（非代码缺陷）：NSIS 安装卸载、真实 CDN 降级、A10 发布一致性、
+> 装包后跨重启的 snooze 行为、about 页（无入口）。
+
+## 三、审计环境声明（沿用）
+
+本机 Bash 沙箱会拦 `spawnSync`（EBUSY）与 `reg.exe`，导致 A10 的 `release.mjs` 用例**必然失败**。
+该失败**不构成代码缺陷**，已用最小实验确证；目标环境（开发机 / CI）为 44/44。
