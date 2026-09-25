@@ -6,6 +6,7 @@
 // 元数据文件（stable.yml）从构建元数据生成，禁止虚构哈希。
 // 凭据只来自环境变量（CI Secrets）：COS_SECRET_ID / COS_SECRET_KEY / COS_BUCKET / COS_REGION。
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { createWriteStream } from 'node:fs'
 import { createRequire } from 'node:module'
 import { readFile, mkdtemp, rm, stat, mkdir } from 'node:fs/promises'
@@ -79,15 +80,40 @@ export async function planUploads(doc, version, distDir) {
 }
 
 /**
+ * 取本次构建的可溯源信息（官方做法）：CI 用 `GITHUB_SHA`；本地用 `git rev-parse HEAD` +
+ * `git status --porcelain` 判断是否有未提交改动。**取不到就返回空对象**，绝不编造 commit。
+ * @returns {{commit?:string, dirty?:boolean}}
+ */
+export function resolveBuildInfo() {
+  /** @type {{commit?:string, dirty?:boolean}} */
+  const out = {}
+  let commit = process.env.GITHUB_SHA || ''
+  try {
+    if (!commit) commit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true }).trim()
+    out.dirty = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8', windowsHide: true }).trim().length > 0
+  } catch {
+    // 无 git 环境（或不在仓库里）：只保证 commit（若来自 CI），dirty 留空。
+  }
+  if (/^[0-9a-f]{7,40}$/i.test(commit)) out.commit = commit
+  return out
+}
+
+/**
  * 由 stable.yml 派生 cn-stable.yml：files[].url / path（含顶层）改写为
  * `<version>/<文件名>` 的相对入口，哈希与大小原样保留（只改路径不改哈希）。
  * @param {{version:string, files?:Array<{url:string, sha512?:string, size?:number}>, path?:string, sha512?:string, size?:number, releaseDate?:string}} doc
  * @param {string} version
+ * @param {{commit?:string, dirty?:boolean}} [buildInfo] 可溯源字段（取不到就不写，不编造）
  * @returns {Record<string, unknown>}
  */
-export function buildCnStableDoc(doc, version) {
+export function buildCnStableDoc(doc, version, buildInfo = {}) {
   /** @type {Record<string, unknown>} */
   const out = JSON.parse(JSON.stringify(doc))
+  // 可溯源字段（官方做法）：写进产物清单，出问题时能定位"这一版是从哪个提交构建的、工作区是否干净"。
+  // ⚠ 这里的 commit 是**本壳仓库**的提交（我们不构建 dsh 本体，只绑定它）。
+  // 取不到就不写这两个字段 —— 宁可缺字段，也不编造。
+  if (typeof buildInfo.commit === 'string' && buildInfo.commit) out.dshBuildCommit = buildInfo.commit
+  if (typeof buildInfo.dirty === 'boolean') out.dshBuildDirty = buildInfo.dirty
   if (Array.isArray(out.files)) {
     out.files = out.files.map(/** @returns {Record<string, unknown>} */ (f) => {
       const name = fileNameOf(/** @type {{url?:string}} */ (f).url ?? '')
@@ -151,7 +177,7 @@ async function main() {
   }
 
   // 3. 最后更新固定入口 cn-stable.yml（失败保留旧入口由本步之前 exit 保证）。
-  const cnDoc = buildCnStableDoc(stableDoc, version)
+  const cnDoc = buildCnStableDoc(stableDoc, version, resolveBuildInfo())
   const cnYml = YAML.stringify(cnDoc)
   await mkdir(join(root, 'dist'), { recursive: true })
   await cos.putObject({ ...bucket, Key: ENTRY_KEY, Body: cnYml, CacheControl: ENTRY_CACHE })

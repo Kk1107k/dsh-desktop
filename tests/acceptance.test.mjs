@@ -1559,7 +1559,7 @@ test('A10 签名可降级为未签名构建，但必须留痕（缺证书不再�
 })
 
 test('A10 release.mjs：上传计划与入口改写（只改路径不改哈希）', async () => {
-  const { planUploads, buildCnStableDoc, fileNameOf } = await import('../tools/release.mjs')
+  const { planUploads, buildCnStableDoc, fileNameOf, resolveBuildInfo } = await import('../tools/release.mjs')
   const dist = mktmp('dsh-a10-dist-')
   const exeName = 'DSH Desktop-Setup-0.1.0.exe'
   const exePath = join(dist, exeName)
@@ -1580,6 +1580,17 @@ test('A10 release.mjs：上传计划与入口改写（只改路径不改哈希�
 
   // 哈希不一致 → 拒绝（不虚构）。
   await assert.rejects(planUploads({ ...doc, files: [{ url: exeName, sha512: 'AAAA', size: 5 }] }, '0.1.0', dist))
+
+  // 可溯源字段：传入即写入；取不到就不写（不编造）
+  const cnMeta = buildCnStableDoc(doc, '0.1.0', { commit: 'abc1234def', dirty: true })
+  assert.equal(cnMeta.dshBuildCommit, 'abc1234def', '产物清单应带 dshBuildCommit')
+  assert.equal(cnMeta.dshBuildDirty, true, '产物清单应带 dshBuildDirty')
+  const noMeta = buildCnStableDoc(doc, '0.1.0', {})
+  assert.ok(!('dshBuildCommit' in noMeta) && !('dshBuildDirty' in noMeta), '取不到就不得写字段')
+  // 本机取构建信息：在仓库里应能拿到 commit（CI 用 GITHUB_SHA，本地用 git rev-parse）
+  const info = resolveBuildInfo()
+  assert.equal(typeof info, 'object')
+  if (info.commit !== undefined) assert.match(info.commit, /^[0-9a-f]{7,40}$/i, 'commit 必须是十六进制，不得编造')
 
   const cn = buildCnStableDoc(doc, '0.1.0')
   assert.equal(cn.files[0].url, '0.1.0/DSH Desktop-Setup-0.1.0.exe')
