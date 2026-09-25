@@ -20,6 +20,14 @@
 
 ---
 
+## 下载
+
+**安装包**（Windows x64 · NSIS）：<https://github.com/Kk1107k/dsh-desktop/releases/latest>
+
+非官方外壳，安装与使用前请连同上方「免责声明」一并阅读。
+
+---
+
 ## 目录说明
 
 ```
@@ -92,7 +100,7 @@ Windows 10/11 x64；全局缓存目录需可读写以访问 `@deepseek-ai/dsh@0.
 ## 安装与开发
 
 ```bash
-git clone <repo>
+git clone https://github.com/Kk1107k/dsh-desktop.git
 cd dsh-desktop
 pnpm install          # 必须用 pnpm，不要 npm install
 pnpm build:preload    # 重新生成 build/preload.cjs
