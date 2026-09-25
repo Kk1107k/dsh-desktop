@@ -22,7 +22,7 @@ const SPEC_MAIN_LOAD_TIMEOUT_MS = 10000
 
 /**
  * 装载并校验用户配置；损坏文件留 .corrupt 副本后恢复默认。
- * @returns {{port:number, theme:string, autoCheckIntervalHours:number, runMode:string, skipVersion:string|null}}
+ * @returns {{schemaVersion:number, port:number, theme:string, autoCheckIntervalHours:number, runMode:string, skipVersion:string|null}}
  */
 function loadConfig() {
   const cfgPath = join(app.getPath('userData'), 'config.json')
@@ -151,7 +151,6 @@ async function bootstrap() {
 
   state.ipc = createIpc({
     logger: log,
-    config: state.config,
     getSplash: () => state.splash,
     getMain: () => state.main?.win ?? null,
     getGeneration: () => state.generation,
@@ -169,7 +168,6 @@ async function bootstrap() {
     logger: log,
     config: state.config,
     isPackaged: app.isPackaged,
-    onTrayState: () => state.tray?.getState?.() ?? 'idle',
     onTraySetState: (s) => state.tray?.setState?.(s),
     onTraySetText: (t, ms) => state.tray?.setFlashText?.(t, ms),
     onUpdateState: (ev) => state.ipc.pushUpdateState(ev),

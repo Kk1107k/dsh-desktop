@@ -43,7 +43,7 @@ function loadSnooze(filePath) {
 
 /**
  * 创建更新控制器。
- * @param {{logger:object, config:object, isPackaged:boolean, onTraySetState:(s:string)=>void, onTraySetFlashText:(t:string, ms?:number)=>void, onUpdateState:(ev:object)=>void, onUpdateOpen:()=>void, onHostStopBeforeInstall:()=>void, onHostRestartAfterInstall:()=>void}} opts
+ * @param {{logger:object, config:object, isPackaged:boolean, onTraySetState:(s:string)=>void, onTraySetText:(t:string, ms?:number)=>void, onUpdateState:(ev:object)=>void, onUpdateOpen:()=>void, onHostStopBeforeInstall:()=>void, onHostRestartAfterInstall:()=>void}} opts
  */
 export function createUpdater(opts) {
   const { logger, config, isPackaged } = opts
@@ -83,7 +83,6 @@ export function createUpdater(opts) {
       ...baseOpts,
     })
     githubUpdater.channel = 'stable'
-    githubUpdater.signals = githubUpdater.signals || {}
 
     cosUpdater = new NsisUpdater({
       provider: 'generic',
@@ -265,7 +264,9 @@ export function createUpdater(opts) {
       await inst.downloadUpdate()
       return { ok: true }
     } catch (err) {
-      return { ok: false, error: { code: 'E_INTERNAL', message: err?.message || 'download failed' } }
+      // catch 的 err 是 unknown：只取 Error.message，其余一律回落固定文案（等价于旧 `err?.message ||`）。
+      const message = err instanceof Error && err.message ? err.message : 'download failed'
+      return { ok: false, error: { code: 'E_INTERNAL', message } }
     }
   }
 
