@@ -1511,7 +1511,13 @@ test('A10 after-pack：app-update.yml 源字段规范化为 COS 兜底，保留�
   const YAML = require('yaml')
   const doc = YAML.parse(readFileSync(join(resources, 'app-update.yml'), 'utf8'))
   assert.equal(doc.provider, 'generic')
-  assert.equal(doc.url, 'https://<占位 COS 域名>/dsh-desktop')
+  // 三处必须同源：after-pack 写进 app-update.yml 的 URL、electron-builder.yml 的 publish url、
+  // 壳内 DEFAULT_COS_URL —— 漂移会让客户端与服务端指向不同桶（静默失效）。
+  const COS_REAL = 'https://dsh-desktop-1432719119.cos.ap-shanghai.myqcloud.com/dsh-desktop'
+  assert.equal(doc.url, COS_REAL, 'app-update.yml 必须写真实 COS 域名，不得留占位符')
+  const builderUrl = YAML.parse(readFileSync(join(root, 'electron-builder.yml'), 'utf8')).publish.find(p => p.provider === 'generic').url
+  assert.equal(builderUrl, COS_REAL, 'electron-builder.yml 必须与 after-pack 同源')
+  assert.match(readFileSync(join(root, 'src', 'updater.js'), 'utf8'), new RegExp(COS_REAL.replace(/[.]/g, '\\.')), '壳内默认源也必须同源')
   assert.equal(doc.channel, 'cn-stable')
   assert.equal(doc.updaterCacheDirName, 'dsh-desktop-updater', '构建器必要字段保留')
   assert.equal(doc.owner, undefined, 'github 专属字段应移除')

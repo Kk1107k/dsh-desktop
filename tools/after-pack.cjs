@@ -1,7 +1,7 @@
 // M11：electron-builder afterPack 钩子（CommonJS：electron-builder 以 require 加载）。
 // 保留构建器生成的必要字段（如 updaterCacheDirName），把安装资源内 app-update.yml
 // 的源字段规范化为国内兜底（SPEC §11）：
-//   provider: generic / url: https://<占位 COS 域名>/dsh-desktop / channel: cn-stable
+//   provider: generic / url: <COS 域名>/dsh-desktop / channel: cn-stable
 // 运行时 M08 仍显式构造 GitHub 主实例；此文件不是自动主备切换器。
 'use strict'
 
@@ -10,8 +10,10 @@ const path = require('node:path')
 const YAML = require('yaml')
 
 const COS_PROVIDER = 'generic'
-// 占位域名：公开发布前由 release 配置统一替换，禁止在源码里编造成真实域名。
-const COS_URL = 'https://<占位 COS 域名>/dsh-desktop'
+// COS 兜底域名（真实桶，凯哥提供并实测可达）。⚠ 必须与 electron-builder.yml 的 generic
+// publish url 以及 src/updater.js 的 DEFAULT_COS_URL **保持同源** —— 三处漂移会让"客户端请求的桶"
+// 与"服务端上传的桶"不一致（静默失效）。改动请一次改齐，用例会断言。
+const COS_URL = 'https://dsh-desktop-1432719119.cos.ap-shanghai.myqcloud.com/dsh-desktop'
 const COS_CHANNEL = 'cn-stable'
 /** github 专属字段，切换到 generic 后不再有意义，规范化时移除。 */
 const GITHUB_ONLY_FIELDS = ['owner', 'repo', 'releaseType']

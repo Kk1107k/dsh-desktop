@@ -64,7 +64,7 @@ const NETWORK_FAIL_RE = /timeout|ETIMEDOUT|ENOTFOUND|cloudflare|404|ERR_CERT|CER
  * 备源 feed URL 的默认值（真实 COS 桶，域名经可达性实测；桶 ap-shanghai / dsh-desktop-1432719119）。
  * ⚠ 「占位符容忍」分支**必须保留** —— 它是**配置缺失时的兜底**：将来换桶、漏填或注入非法值时，
  *   代码要能记一条"备源未配置"、降级为主源，而不是崩。
- *   历史背景：默认值曾经就是占位符 `https://<占位 COS 域名>/dsh-desktop`，尖括号让
+ *   历史背景：默认值曾经是**待填的占位形态**（尖括号包住的域名），那种串不是合法 URL ——
  *   electron-updater 构造时 `new URL` 直接抛（unhandledRejection Invalid URL → 壳退出）。
  *   如今默认值合法，但容忍逻辑（`isHttpUrl` + 逐源 try/catch）仍在此处与 ensureInstances 生效。
  * 覆盖顺序：`opts.cosUrl`（注入，测试用）→ 本默认值。
