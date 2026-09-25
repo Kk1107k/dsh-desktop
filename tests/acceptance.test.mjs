@@ -1534,6 +1534,8 @@ test('A10 electron-builder 配置：NSIS 可选目录、产物入 dist/、归档
   assert.equal(cfg.nsis.perMachine, false)
   assert.ok(cfg.files.includes('!assets/fonts/_archive/**'), '归档字体必须排除')
   assert.ok(cfg.files.some(f => String(f).includes('!assets/_archive-')), '归档素材必须排除')
+  assert.ok(cfg.files.some(f => String(f) === '!assets/screenshots/**'),
+    '截图是文档素材（README 用），必须排除出安装包')
   assert.deepEqual(cfg.win.target, ['nsis'])
   const generic = cfg.publish.find(p => p.provider === 'generic')
   assert.equal(generic.url, 'https://dsh-desktop-1432719119.cos.ap-shanghai.myqcloud.com/dsh-desktop',

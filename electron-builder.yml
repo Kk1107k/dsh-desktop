@@ -13,6 +13,8 @@ files:
   - "!assets/fonts/_archive/**"
   - "!assets/_archive-*"
   - "!assets/**/_archive/**"
+  # 排除截图：README 的文档素材（splash / 主窗口 / 托盘菜单），不该进安装包
+  - "!assets/screenshots/**"
   - "package.json"
   - "LICENSE"
 afterPack: tools/after-pack.cjs
