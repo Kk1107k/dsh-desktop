@@ -3,6 +3,8 @@ dist/
 release/
 build/
 out/
+# python 生成器跑过之后的字节码缓存（tools/gen_*.py）
+__pycache__/
 # electron-builder / electron-log 产物
 *.log
 logs/

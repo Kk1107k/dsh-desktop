@@ -195,11 +195,30 @@ TEMPLATE = """<!DOCTYPE html>
     else if (state === 'error') api.retry && api.retry();
     else api.close && api.close();
   });
-  // "稍后" = 真的延后 24h（SPEC §7 / D3）：available 状态下先持久化 snooze 再关闭；
-  // 其他状态只是关闭窗口。找不到 snooze 时不能假装已延后 —— 直接关闭。
-  btnS.addEventListener('click', function () {
-    if (state === 'available' && api && api.snooze) api.snooze();
-    if (api && api.close) api.close();
+  // "稍后" = 真的延后 24h（SPEC §7 / D3）：available 状态下必须先拿到 snooze 的持久化结果，
+  // **成功才允许关窗** —— 否则写盘失败（E_IO）会被伪装成"已延后"：用户以为延后了 24h，
+  // 实际 until 没落盘，24h 内照旧被提醒。这正是 D3 明令禁止的形态。
+  function snoozeFailed() {
+    // 失败时更新状态未变，render() 不会被再次调用，故这里改的文案不会被它覆盖。
+    btnS.disabled = false;
+    btnS.textContent = '延后失败，请重试';
+    if (msgEl) msgEl.textContent = '延后失败：未能写入延后记录。请重试，或改用立即更新。';
+  }
+  btnS.addEventListener('click', async function () {
+    if (!api) return;
+    // 非 available：本按钮只承担关闭语义，这里没有延后可言。
+    if (state !== 'available') { api.close && api.close(); return; }
+    // api.snooze 缺失 = 桥未按契约暴露该方法（属装配/契约问题，由 A07 的 preload 契约断言拦截）：
+    // 该分支不发出任何延后请求，页面也不上报任何"已延后"的成功态，故保持直接关闭。
+    if (!api.snooze) { api.close && api.close(); return; }
+    btnS.disabled = true;
+    try {
+      var res = await api.snooze();
+      if (res && res.ok === true) { api.close && api.close(); return; }
+      snoozeFailed();
+    } catch (e) {
+      snoozeFailed();
+    }
   });
 
   if (api) {

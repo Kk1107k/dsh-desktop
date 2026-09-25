@@ -572,6 +572,28 @@ test('A07 about 页版本：协议响应期替换占位符，不依赖脚本执�
   assert.equal(await bad.text(), 'not found')
 })
 
+test('A07 更新弹窗「稍后」契约：必须按 snooze() 结果决定是否关窗（D3）', async () => {
+  // dev 态 isPackaged=false，更新弹窗不会出现 ⇒ 页面行为没有真机可达路径可点，
+  // 只能以源码级断言兜底（先例：「页面不写死版本号」）。断言的是契约结构，不是排版。
+  const html = readFileSync(join(root, 'src', 'update-dialog.html'), 'utf8')
+  const from = html.indexOf('btnS.addEventListener')
+  assert.ok(from > 0, '应能找到「稍后」按钮的处理器')
+  const handler = html.slice(from, html.indexOf('if (api) {', from))
+
+  assert.match(handler, /async/, '处理器应为异步：必须等待 snooze() 的持久化结果')
+  assert.match(handler, /await\s+api\.snooze\(\)/, '必须 await snooze() 的返回值')
+  assert.match(handler, /res\s*&&\s*res\.ok\s*===\s*true/, '必须判断返回值的 ok（而非发出请求就完事）')
+  assert.match(handler, /ok[\s\S]*api\.close\(\)/, '关窗必须由成功结果控制')
+  assert.ok(!/if \(api && api\.close\) api\.close\(\);/.test(handler),
+    '不得恢复"无条件关窗"的旧写法 —— 那会把 E_IO 写盘失败伪装成"已延后"（D3 禁止）')
+
+  // 失败分支必须存在、有用户可感知提示、且不关窗（用户要能重试）。
+  const failed = html.slice(html.indexOf('function snoozeFailed'), from)
+  assert.ok(failed.length > 0, '应有独立的失败处理分支')
+  assert.match(failed, /延后失败/, '失败必须给出可感知提示，不得静默')
+  assert.ok(!/close/.test(failed), '失败分支不得关窗')
+})
+
 // ---------------------------------------------------------------------------
 // A09 托盘与真实退出
 // ---------------------------------------------------------------------------
