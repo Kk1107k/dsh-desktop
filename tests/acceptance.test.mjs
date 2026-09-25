@@ -1183,6 +1183,27 @@ test('§7:251 默认下载地址的 host 必须在白名单内（改一处不改
   assert.ok(allow.includes(`'${host}'`), `默认地址 host=${host} 必须出现在 DOWNLOAD_HOST_ALLOWLIST 里（当前：${allow}）`)
 })
 
+test('§7/铁律③ 差量下载防倒退：不得禁用差分，且发布侧必须产出并上传 .blockmap', async () => {
+  const YAML = require('yaml')
+  // ① 壳侧：不得把差量关掉（未设为 true 即符合；显式 false 表示"不禁用"）
+  const updaterSrc = readFileSync(join(root, 'src', 'updater.js'), 'utf8')
+  assert.ok(!/disableDifferentialDownload\s*:\s*true/.test(updaterSrc), '不得禁用差量下载')
+  assert.match(updaterSrc, /disableDifferentialDownload: false/, '应显式声明不禁用差量')
+  assert.match(updaterSrc, /blockmap/, '差量依赖 blockmap，注释里必须写明这一依赖')
+
+  // ② 打包侧：必须产出 blockmap（不能被配置关掉）
+  const builderSrc = readFileSync(join(root, 'electron-builder.yml'), 'utf8')
+  assert.ok(!/differentialPackage\s*:\s*false/.test(builderSrc), '不得关闭差分包生成')
+  assert.equal(YAML.parse(builderSrc).nsis?.differentialPackage, undefined, 'nsis 下不得显式关闭 differentialPackage')
+
+  // ③ 发布侧：GitHub Releases 必须上传 .blockmap
+  const relSrc = readFileSync(join(root, '.github', 'workflows', 'release.yml'), 'utf8')
+  assert.match(relSrc, /Setup-\*\.exe\.blockmap/, 'GitHub Releases 上传清单必须含 .blockmap')
+  // ④ 发布侧：COS 必须上传 .blockmap（由既有用例覆盖：plan 长度 2 且 plan[1] 是 .blockmap）
+  const releaseSrc = readFileSync(join(root, 'tools', 'release.mjs'), 'utf8')
+  assert.match(releaseSrc, /blockmap/, 'release.mjs 的上传计划必须处理 .blockmap')
+})
+
 test('§7 下载时限：只保留"无进度"看门狗，不设总时长上限（官方口径）', async () => {
   const src = readFileSync(join(root, 'src', 'updater.js'), 'utf8')
   assert.ok(src.includes('DOWNLOAD_NO_PROGRESS_MS'), '必须保留无进度看门狗（快速发现卡死）')

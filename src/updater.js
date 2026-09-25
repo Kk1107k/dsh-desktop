@@ -150,7 +150,17 @@ export function createUpdater(opts) {
   async function ensureInstances() {
     if (instancesReady) return
     instancesReady = true
-    const baseOpts = { autoDownload: false, autoInstallOnAppQuit: false, allowPrerelease: false, allowDowngrade: false }
+    // 差量下载（differential）是**官方策略要求，不是可选优化**：官方铁律③「桌面壳未变化的数据块
+    // 不应强制完整传输」。它依赖发布侧产出并上传 `.blockmap`（electron-builder 默认产出；
+    // release.yml 与 tools/release.mjs 都必须把 .blockmap 带上）。此处显式写 false 表明**不禁用**，
+    // 防止有人为图省事关掉差量（关掉会让每次更新都整包下载）。
+    const baseOpts = {
+      autoDownload: false,
+      autoInstallOnAppQuit: false,
+      allowPrerelease: false,
+      allowDowngrade: false,
+      disableDifferentialDownload: false,
+    }
     try {
       const mod = await import('electron-updater')
       const NsisUpdater = mod.NsisUpdater || mod.default?.NsisUpdater
