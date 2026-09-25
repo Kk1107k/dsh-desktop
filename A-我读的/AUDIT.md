@@ -224,3 +224,33 @@ partition 双注册、`hardenSession` 双 session 安装、托盘双输入 deriv
 
 本机 Bash 沙箱会拦 `spawnSync`（EBUSY）与 `reg.exe`，导致 A10 的 `release.mjs` 用例**必然失败**。
 该失败**不构成代码缺陷**，已用最小实验确证；目标环境（开发机 / CI）为 44/44。
+
+---
+
+# 收尾（2026-09-25 16:02 · 审计方复核）
+
+| 项 | 结果 |
+|---|---|
+| **#23** splash 补 `webSecurity` / `webviewTag` | ✅ `main.js:332-333`；三个窗口（主窗口 `main-window.js:99-100`、更新窗 `:226`、splash）**五项开关全部齐备**，注释点明"不依赖默认值" |
+| 断言 | ✅ 新增 1 条覆盖三个窗口（主/更新窗走假件记录的 `webPreferences` 行为断言，splash 走源码级断言），缺任一项即失败 |
+| 构建复验 | ✅ `dist/DSH Desktop-Setup-0.1.0.exe` = **84,709,029 B（80.78 MiB）** < 130MB；`.blockmap` 89,800 B；构建内测试 45/45；0 错误、0 警告 |
+| **包内确认为新代码** | ✅ 审计方独立在 `dist/win-unpacked/resources/app.asar` 中核验标志串：`dsh-local` 1、`hardenSession` 3、`hardenLocalPageWindow` 4、`setPermissionRequestHandler` 1、`延后失败` 4、`界面进程异常退出` 1 —— **七条安全/行为修复确已在包内，装包测试不会验到旧包** |
+| 测试 | ✅ **45/45**（本机复跑 44/45，失败项仍为 A10 的 `spawnSync` 环境假象） |
+| 工作区 | 干净 |
+
+## 最终状态
+
+> **代码层终审通过**：P0 = 0、P1 = 0；tsc 0 错、测试 45/45；安装包 80.78 MiB 且已确认为最新代码。
+>
+> **16 条 P2 全部登记、不阻塞**（#2 / #3 缓至发布准备期，其余择期清理）。
+
+## 仍需真实环境（非代码缺陷）
+
+| 项 | 需要 |
+|---|---|
+| NSIS 安装 / 卸载 / 启动 | 装一次 `dist/DSH Desktop-Setup-0.1.0.exe`（**先停 dev 实例**，否则被单例锁挡） |
+| 真实 CDN 降级、A10 发布一致性 | COS 桶 + 真实域名 + 一次 `v*` tag 发布 |
+| 装包后跨重启的 snooze 行为 | 装包后实测（dev 态不执行真实更新） |
+| about 页 | 无入口，需 P4 决定是否加入口 |
+| 更新检查的 dev 态可观测性 | 凯哥已决定延至正式安装时处理 |
+| Git | 本地领先远端若干提交，需推送 |
