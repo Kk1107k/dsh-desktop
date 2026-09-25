@@ -117,7 +117,8 @@ export function createIpc(deps) {
       try {
         if (!authorize(event, 'splash')) return fail('E_FORBIDDEN', 'not splash')
         // finishRequested 之前 = 取消启动；之后 = 转场确认。
-        deps.onSplashCloseBeforeFinish?.()
+        if (deps.finishRequested) deps.onSplashFinishConfirm?.()
+        else deps.onSplashCloseBeforeFinish?.()
         return ok({})
       } catch (err) { return fail('E_INTERNAL', errMessage(err)) }
     })
@@ -180,6 +181,9 @@ export function createIpc(deps) {
     win.webContents.send(CHANNELS.SPLASH_STATUS, { text })
   }
   function pushSplashFinish() {
+    // 转场请求已发出：此后 splash 的 close 即「转场确认」而不是「取消启动」（SPEC §4 / D2）。
+    deps.finishRequested = true
+    deps.setFinishRequested?.()
     const win = deps.getSplash?.()
     if (!win || win.isDestroyed?.()) return
     win.webContents.send(CHANNELS.SPLASH_FINISH, {})
