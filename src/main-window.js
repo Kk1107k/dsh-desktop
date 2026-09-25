@@ -8,12 +8,17 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
 /**
+ * 策略文本。`allowEval` 只对上游 UI（loopback origin）开：
+ * 上游 bundle 用 `new Function` 动态求值，脚本源缺 'unsafe-eval' 会抛
+ * `EvalError: Refused to evaluate a string as JavaScript`，SPA 起不来 → 白屏。
+ * 这是上游强制的放宽，不是壳主动降低标准；登记见 SPEC §11.1。
  * @param {number} port
+ * @param {boolean} allowEval
  * @returns {string}
  */
-const HOST_CSP = (port) => [
+const buildCsp = (port, allowEval) => [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
+  `script-src 'self' 'unsafe-inline'${allowEval ? " 'unsafe-eval'" : ''}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
@@ -23,6 +28,15 @@ const HOST_CSP = (port) => [
   "base-uri 'self'",
   "frame-ancestors 'none'",
 ].join('; ')
+
+/** host（上游 UI）策略。 */
+const HOST_CSP = (port) => buildCsp(port, true)
+/**
+ * 非 host origin（壳自己的 dsh-app:// 页面：splash / update-dialog / about）策略。
+ * 与加 'unsafe-eval' 之前逐字一致：这些页面的脚本是我们自己写的，不需要也不允许 eval
+ * （SPEC §9：本地页面禁止为通过测试加入 unsafe-eval）。
+ */
+const LOCAL_CSP = (port) => buildCsp(port, false)
 
 /**
  * 创建主窗口控制器。
@@ -77,7 +91,19 @@ export function createMainWindow({ config, logger, isQuitting, isTrayReady }) {
     const hostSession = w.webContents.session
     hostSession.webRequest.onHeadersReceived((details, cb) => {
       const res = { responseHeaders: { ...details.responseHeaders } }
-      res.responseHeaders['Content-Security-Policy'] = [HOST_CSP(config.port)]
+      // SPEC §9：上游自带的 CSP 保留并与壳策略共同生效（多重 CSP 为合取，更严格者胜出）。
+      // 实测 0.1.7-alpha.2 不发 CSP（见 §11.1），故此处通常为空。
+      /** @type {string[]} */
+      const upstream = []
+      for (const key of Object.keys(res.responseHeaders)) {
+        if (key.toLowerCase() === 'content-security-policy') {
+          upstream.push(.../** @type {string[]} */ ([].concat(res.responseHeaders[key])))
+          delete res.responseHeaders[key]
+        }
+      }
+      // 只按 origin 放宽：上游 UI 用 HOST_CSP（含 'unsafe-eval'），壳自己的页面保持原策略。
+      const isHostOrigin = details.url.startsWith(`http://127.0.0.1:${config.port}/`)
+      res.responseHeaders['Content-Security-Policy'] = [...upstream, isHostOrigin ? HOST_CSP(config.port) : LOCAL_CSP(config.port)]
       cb(res)
     })
 
