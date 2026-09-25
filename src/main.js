@@ -232,6 +232,18 @@ async function bootstrap() {
     // 只注入取值函数：M06 不直接读 main.js 的私有 state。
     isQuitting: () => state.quitting,
     isTrayReady: () => !!state.tray,
+    // SPEC §7:248：更新窗口的 X 与页面 close() 同语义 —— M08 在 available 下会转 snooze。
+    onUpdateCloseRequest: async () => {
+      const res = state.updater?.close?.() ?? { ok: true }
+      if (res?.ok) return true
+      // 延后失败（E_IO）：与页面按钮路径同语义，不关窗并给原生提示，让用户能重试。
+      void dialog.showMessageBox({
+        type: 'error',
+        title: 'DSH Desktop',
+        message: '延后失败：未能写入延后记录。请重试，或改用立即更新。',
+      })
+      return false
+    },
   })
 
   state.updater = createUpdater({

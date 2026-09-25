@@ -693,6 +693,34 @@ test('A09 托盘徽章优先级：update > running > idle（host 健康显绿，
   assert.match(icon(), /^tray\.png$/, 'host 失联/停止应回落 idle（SPEC §6:203）')
 })
 
+test('A09 更新窗口 X：available 下同按钮语义（先问主进程，只有放行才销毁）', async () => {
+  resetElectronStub({})
+  globalThis.__DSH_TEST_WINDOWS__ = []
+  const { createMainWindow } = await import('../src/main-window.js')
+  let allow = false
+  let calls = 0
+  const mw = createMainWindow({
+    config: { port: 3080 }, logger: fakeLogger(),
+    isQuitting: () => false, isTrayReady: () => true,
+    onUpdateCloseRequest: async () => { calls++; return allow },
+  })
+  mw.openUpdateWindow()
+  const upd = globalThis.__DSH_TEST_WINDOWS__.at(-1)
+  assert.ok(upd, '应创建更新窗口')
+  const tick = () => new Promise(r => setTimeout(r, 0))
+
+  upd.close()
+  await tick()
+  assert.equal(calls, 1, '点 X 必须先问主进程（snooze 落盘结果只有 M08 知道）')
+  assert.equal(upd.isDestroyed(), false, '延后未成功时必须保留窗口（与按钮路径同语义）')
+
+  allow = true
+  upd.close()
+  await tick()
+  assert.equal(calls, 2)
+  assert.equal(upd.isDestroyed(), true, '允许关闭时才销毁')
+})
+
 test('A09 splash 转场确认接线：finish 之前 close = 取消，之后 close = 转场确认', async () => {
   resetElectronStub({ isPackaged: false })
   const { createIpc, CHANNELS } = await import('../src/ipc.js')

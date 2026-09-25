@@ -49,10 +49,10 @@ export const LOCAL_PAGE_CSP = (hashes) => [
 
 /**
  * 创建主窗口控制器。
- * @param {{config:{port:number}, logger:import('./logger.js').Logger, isQuitting?:()=>boolean, isTrayReady?:()=>boolean}} opts
+ * @param {{config:{port:number}, logger:import('./logger.js').Logger, isQuitting?:()=>boolean, isTrayReady?:()=>boolean, onUpdateCloseRequest?:()=>Promise<boolean>}} opts
  * @returns {{win:import('electron').BrowserWindow|null, ensure:()=>boolean, loadURL:(url:string)=>Promise<void>, show:()=>void, openUpdateWindow:()=>void, loaded:boolean, readyToShow:boolean, once:(ev:string,fn:()=>void)=>void}}
  */
-export function createMainWindow({ config, logger, isQuitting, isTrayReady }) {
+export function createMainWindow({ config, logger, isQuitting, isTrayReady, onUpdateCloseRequest }) {
   const log = logger
   /** @type {import('electron').BrowserWindow|null} */ let win = null
   /** @type {import('electron').BrowserWindow|null} */ let updateWin = null
@@ -197,6 +197,18 @@ export function createMainWindow({ config, logger, isQuitting, isTrayReady }) {
     updateWin = newWin
     newWin.loadURL('dsh-app://ui/update-dialog.html')
     newWin.once('ready-to-show', () => newWin.show())
+    // SPEC §7:248：available 状态下窗口 X 与页面 close() 同语义（都要走 snooze）。
+    // 落盘结果只有 M08 知道，所以这里先拦下、再按注入的回调结果处置：允许才真的销毁。
+    if (onUpdateCloseRequest) {
+      newWin.on('close', (e) => {
+        e.preventDefault()
+        void onUpdateCloseRequest().then(allow => {
+          if (allow && !newWin.isDestroyed()) newWin.destroy()
+        }, () => {
+          // 回调异常不得把窗口卡死：按"不允许"处理（保持窗口，用户可重试）。
+        })
+      })
+    }
     newWin.on('closed', () => { updateWin = null })
   }
 
