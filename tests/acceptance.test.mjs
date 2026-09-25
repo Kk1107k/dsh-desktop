@@ -701,7 +701,22 @@ test('§9:283 权限默认拒绝：session 上的权限请求/检查处理器一
   assert.match(fn, /setPermissionRequestHandler\(\([^)]*\)\s*=>\s*cb\(false\)\)/, '权限请求必须一律拒绝')
   assert.match(fn, /setPermissionCheckHandler\(\(\)\s*=>\s*false\)/, '权限检查必须一律拒绝')
   const sites = (src.match(/hardenSession\(/g) ?? []).length - 1   // 减去函数定义本身
-  assert.ok(sites >= 1, `hardenSession 必须被实际调用（当前 ${sites} 处）`)
+  assert.ok(sites >= 2, `每个 session 都要过一遍 hardenSession：host + 本地页 partition（当前 ${sites} 处）`)
+})
+
+test('§9:275 session 分离：本地页走独立 partition，host 侧（含鉴权）留在默认 session', async () => {
+  const mainSrc = readFileSync(join(root, 'src', 'main.js'), 'utf8')
+  const winSrc = readFileSync(join(root, 'src', 'main-window.js'), 'utf8')
+
+  assert.match(mainSrc, /partition:\s*LOCAL_PARTITION/, 'splash 窗口应使用本地 partition')
+  assert.match(winSrc, /partition:\s*LOCAL_PARTITION/, '更新窗口应使用本地 partition')
+  // partition session 不继承默认 session 的协议处理器，必须单独注册，否则本地页整页加载失败
+  assert.match(mainSrc, /session\.fromPartition\(LOCAL_PARTITION\)[\s\S]{0,200}protocol\.handle\('dsh-app'/,
+    '本地 partition 必须单独注册 dsh-app 协议')
+  // 鉴权不得被一起隔开：token→cookie 换取必须落在主窗口所在的默认 session
+  assert.match(mainSrc, /host\.authorize\(session\.defaultSession\)/, 'token→cookie 换取必须用默认 session')
+  const mainWin = winSrc.slice(winSrc.indexOf('const w = new BrowserWindow'), winSrc.indexOf('w.webContents.setWindowOpenHandler'))
+  assert.ok(!/partition:/.test(mainWin), '主窗口不得使用独立 partition（否则 cookie 落点与窗口 session 错位）')
 })
 
 test('A09 更新窗口 X：available 下同按钮语义（先问主进程，只有放行才销毁）', async () => {

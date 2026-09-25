@@ -8,6 +8,14 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
 /**
+ * 本地页（壳自己的 dsh-app 页面：splash / update-dialog / about）专用 session 的 partition 名。
+ * 无 `persist:` 前缀 = 内存 session，不落盘、不共享 host 的 cookie 罐（SPEC §9:275）。
+ * 注意：**host 侧必须留在默认 session** —— 主窗口鉴权用的 token→cookie 换取落在默认 session，
+ * 两条链路必须同一个 session，分离不能把鉴权一起隔开。
+ */
+export const LOCAL_PARTITION = 'dsh-local'
+
+/**
  * host（上游 UI，loopback origin）策略。
  * script-src 的 'unsafe-eval' 是上游强制的放宽：其 bundle 用 `new Function` 动态求值，
  * 缺它会抛 `EvalError: Refused to evaluate a string as JavaScript`，SPA 起不来 → 白屏。
@@ -189,6 +197,7 @@ export function createMainWindow({ config, logger, isQuitting, isTrayReady, onUp
         preload: join(__dirname, '..', 'build', 'preload.cjs'),
         contextIsolation: true, nodeIntegration: false,
         webSecurity: true, sandbox: true, webviewTag: false,
+        partition: LOCAL_PARTITION,
         // 版本统一来自 app.getVersion()（SPEC D4）。曾误传 process.versions.electron：
         // 更新页的 updateAPI 目前没有 getVersion()，故无实际影响，但属活陷阱（谁加上就会拿到 Electron 版本）。
         additionalArguments: [`--dsh-role=update`, `--dsh-version=${app.getVersion()}`],

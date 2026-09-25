@@ -83,14 +83,25 @@ export const protocol = {
 }
 /** net 假件：main.js 的 dsh-app 协议处理器经它读包内页面；测试不走该路径，够顶层引用即可。 */
 export const net = { fetch: async () => new Response('', { status: 200 }) }
-export const session = {
-  defaultSession: Object.assign(new EventEmitter(), {
-    // main.js 在 ready 后用它做 token→cookie 交换；假件只需存在且不抛。
+/** 造一个够用的 session 假件：权限钩子 + 协议注册口 + fetch（mock 交换）。 */
+function fakeSession() {
+  return Object.assign(new EventEmitter(), {
     fetch: async () => ({ status: 303, body: null }),
-    // SPEC §9:283 的权限默认拒绝钩子（main.js 的 hardenSession 会调）。
     setPermissionRequestHandler() {},
     setPermissionCheckHandler() {},
-  }),
+    protocol: { handle() {} },
+  })
+}
+
+export const session = {
+  defaultSession: fakeSession(),
+  /** SPEC §9:275：本地页 partition。同名返回同一实例（与 Electron 语义一致）。 */
+  fromPartition(name) {
+    const key = String(name)
+    if (!this._partitions) this._partitions = new Map()
+    if (!this._partitions.has(key)) this._partitions.set(key, fakeSession())
+    return this._partitions.get(key)
+  },
 }
 export const dialog = { showMessageBox: async () => ({ response: 0 }) }
 export const shell = { openExternal: async () => {} }

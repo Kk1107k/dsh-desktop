@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, copyFil
 import { createHash } from 'node:crypto'
 import { createLogger } from './logger.js'
 import { createDshHost } from './dsh-host.js'
-import { createMainWindow, LOCAL_PAGE_CSP } from './main-window.js'
+import { createMainWindow, LOCAL_PAGE_CSP, LOCAL_PARTITION } from './main-window.js'
 import { createTray } from './tray.js'
 import { createUpdater } from './updater.js'
 import { createIpc, CHANNELS } from './ipc.js'
@@ -218,6 +218,13 @@ async function bootstrap() {
   // SPEC §9:283：权限默认拒绝，必须在任何窗口加载前装好。
   hardenSession(session.defaultSession)
 
+  // SPEC §9:275：本地页 session 与 host session 分离。本地页走独立的内存 partition；
+  // host 侧（主窗口 + token→cookie 换取）继续留在默认 session，两者不共享 cookie 罐。
+  const localSession = session.fromPartition(LOCAL_PARTITION)
+  hardenSession(localSession)
+  // 协议处理器按 session 注册：partition session 不会继承默认 session 的 dsh-app 处理器。
+  localSession.protocol.handle('dsh-app', handleDshAppRequest)
+
   protocol.handle('dsh-app', handleDshAppRequest)
 
   state.host = createDshHost({ config: state.config, logger: log })
@@ -323,6 +330,8 @@ function createSplashWindow() {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
+      // SPEC §9:275：本地页走独立 session，与 host session 隔离。
+      partition: LOCAL_PARTITION,
       additionalArguments: [`--dsh-role=splash`, `--dsh-version=${app.getVersion()}`],
     },
   })
