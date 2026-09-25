@@ -1183,6 +1183,46 @@ test('§7:251 默认下载地址的 host 必须在白名单内（改一处不改
   assert.ok(allow.includes(`'${host}'`), `默认地址 host=${host} 必须出现在 DOWNLOAD_HOST_ALLOWLIST 里（当前：${allow}）`)
 })
 
+test('§7 更新检查退避+抖动：失败翻倍/封顶/成功重置/下限 1s（机制对齐官方，数值用我们的）', async () => {
+  const { computeCheckDelayMs } = await import('../src/updater.js')
+  const H = 3600 * 1000
+  const delay = (ms, failures, cap = H) => computeCheckDelayMs({ baseMs: ms, failures, jitter: 0, maxBackoffMs: cap, random: () => 0 })
+
+  // ① 官方那组数值（base 10min / cap 1h）作为机制对齐的参照
+  assert.equal(delay(10 * 60 * 1000, 0), 10 * 60 * 1000, '无失败：按基础间隔')
+  assert.equal(delay(10 * 60 * 1000, 1), 20 * 60 * 1000, '失败一次：翻倍')
+  assert.equal(delay(10 * 60 * 1000, 3), H, '增长到上限：封顶 1 小时')
+  assert.equal(delay(10 * 60 * 1000, 9), H, '超过上限仍封顶')
+
+  // ② 我们的默认（base 6h、cap 1h）：上限不得把间隔压短 —— 失败不退避，但绝不更频繁
+  assert.equal(delay(6 * H, 0), 6 * H)
+  assert.equal(delay(6 * H, 3), 6 * H, '基础间隔大于上限时退避不生效，但绝不缩短间隔')
+
+  // ③ 把上限抬到基础之上即可获得真正的退避增长（DSH_DESKTOP_UPDATE_MAX_BACKOFF_MS 的用途）
+  assert.equal(delay(H, 0, 24 * H), H)
+  assert.equal(delay(H, 2, 24 * H), 4 * H)
+  assert.equal(delay(H, 9, 24 * H), 24 * H, '封顶 24h')
+
+  assert.equal(computeCheckDelayMs({ baseMs: 10, failures: 0, jitter: 0, maxBackoffMs: H, random: () => 0 }), 1000,
+    '基础间隔小于下限时取 1 秒')
+
+  // 抖动：在延迟上随机增加 [0, jitter] 比例
+  const noJitter = computeCheckDelayMs({ baseMs: 10 * H, failures: 0, jitter: 0, maxBackoffMs: 99 * H, random: () => 0.5 })
+  const halfJitter = computeCheckDelayMs({ baseMs: 10 * H, failures: 0, jitter: 0.2, maxBackoffMs: 99 * H, random: () => 0.5 })
+  assert.equal(noJitter, 10 * H)
+  assert.equal(halfJitter, Math.round(10 * H * 1.1), 'jitter=0.2 且 random=0.5 ⇒ +10%')
+})
+
+test('§7 退避/抖动环境变量可覆盖（命名对齐官方字段表）', async () => {
+  const { computeCheckDelayMs } = await import('../src/updater.js')
+  const src = readFileSync(join(root, 'src', 'updater.js'), 'utf8')
+  for (const name of ['DSH_DESKTOP_UPDATE_CHECK_INTERVAL_MS', 'DSH_DESKTOP_UPDATE_MAX_BACKOFF_MS', 'DSH_DESKTOP_UPDATE_JITTER']) {
+    assert.ok(src.includes(name), `应支持环境变量覆盖：${name}`)
+  }
+  assert.ok(src.includes('envRatio(JITTER_ENV) ?? JITTER_DEFAULT'), '抖动默认值取自常量')
+  assert.equal(computeCheckDelayMs.length, 1, 'computeCheckDelayMs 为单参数纯函数（便于断言）')
+})
+
 test('§11.1 #7 根源：registry 由壳固定下发（不读用户 .npmrc），web/shutdown 两处 spawn 一致', async () => {
   const src = readFileSync(join(root, 'src', 'dsh-host.js'), 'utf8')
   assert.match(src, /const NPM_REGISTRY = process\.env\.DSH_DESKTOP_NPM_REGISTRY \|\| 'https:\/\/registry\.npmjs\.org'/,

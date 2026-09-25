@@ -8,6 +8,57 @@ const CHECK_DEADLINE_MS = 15000
 const DOWNLOAD_NO_PROGRESS_MS = 30000
 const DOWNLOAD_TOTAL_DEADLINE_MS = 10 * 60 * 1000
 const AUTO_INTERVAL_DEFAULT_H = 6
+// 更新检查的抖动与退避（对齐官方机制，**不对齐数值**）：官方基础间隔 10 分钟是因为他们有服务端
+// 策略轮询；桌面工具用 config.autoCheckIntervalHours（默认 6h）更合理。三者都可用环境变量覆盖
+//（命名对齐官方字段表）。
+const CHECK_INTERVAL_ENV = 'DSH_DESKTOP_UPDATE_CHECK_INTERVAL_MS'
+const MAX_BACKOFF_ENV = 'DSH_DESKTOP_UPDATE_MAX_BACKOFF_MS'
+const JITTER_ENV = 'DSH_DESKTOP_UPDATE_JITTER'
+const MAX_BACKOFF_DEFAULT_MS = 60 * 60 * 1000     // 退避上限：1 小时
+const JITTER_DEFAULT = 0.2                        // 抖动：在延迟上随机增加的比例（0~1）
+const MIN_DELAY_MS = 1000                         // 最终延迟下限（官方要求至少 1 秒）
+
+/**
+ * 读一个整数环境变量；缺失/非法返回 null（调用方回落默认值）。
+ * @param {string} name
+ * @returns {number|null}
+ */
+function envInt(name) {
+  const raw = process.env[name]
+  if (raw === undefined || raw === '') return null
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null
+}
+
+/**
+ * 读一个 0~1 的浮点环境变量；缺失/非法返回 null。
+ * @param {string} name
+ * @returns {number|null}
+ */
+function envRatio(name) {
+  const raw = process.env[name]
+  if (raw === undefined || raw === '') return null
+  const n = Number(raw)
+  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : null
+}
+
+/**
+ * 计算下一次自动检查的延迟（纯函数，便于直接断言）。
+ * - 退避（官方机制）：连续失败各自翻倍，上限 maxBackoffMs，成功后由调用方重置 failures。
+ * - 抖动（官方机制）：在延迟上随机增加 jitter 比例（0~1），避免所有客户端同时打点。
+ * - 最终延迟下限 MIN_DELAY_MS（1 秒）。
+ * @param {{baseMs:number, failures:number, jitter:number, maxBackoffMs:number, random?:()=>number}} o
+ * @returns {number}
+ */
+export function computeCheckDelayMs({ baseMs, failures, jitter, maxBackoffMs, random = Math.random }) {
+  // ⚠ 上限必须不低于基础间隔：否则"失败退避"会把间隔**压短**（base 6h + cap 1h ⇒ 失败后反而更频繁），
+  // 与退避的意图相反。基础间隔本身大于上限时，退避不生效但绝不缩短。
+  // 想要真正的退避增长，把 DSH_DESKTOP_UPDATE_MAX_BACKOFF_MS 设到基础间隔之上（如 24h）。
+  const cap = Math.max(baseMs, maxBackoffMs)
+  const backoff = Math.min(baseMs * 2 ** Math.max(0, failures), cap)
+  const delay = backoff * (1 + random() * Math.max(0, Math.min(1, jitter)))
+  return Math.max(MIN_DELAY_MS, Math.round(delay))
+}
 const SNOOZE_DURATION_MS = 24 * 60 * 60 * 1000
 const NETWORK_FAIL_RE = /timeout|ETIMEDOUT|ENOTFOUND|cloudflare|404|ERR_CERT|CERT_|SSL|ECONNRESET|ECONNREFUSED|UNABLE_TO_VERIFY|SELF_SIGNED/i
 /**
@@ -86,6 +137,8 @@ export function createUpdater(opts) {
   let autoTimer = null
   let checkTimer = null                 // 单源检查逻辑截止计时（SPEC §7：15s）
   let inflight = null
+  /** 连续失败次数（退避用）：失败累加、进入 latest/available 清零。 */
+  let checkFailures = 0
   let lastProgressAt = 0
   let downloadStartedAt = 0
   let agreedVersion = null             // 用户在 GitHub 上同意的目标版本，COS 降级需校验一致
@@ -155,6 +208,9 @@ export function createUpdater(opts) {
    */
   function setPageState(next, data) {
     pageState = next
+    // 退避计数只在终态更新：失败累加（下次间隔翻倍）、成功清零。
+    if (next === 'error') checkFailures++
+    else if (next === 'latest' || next === 'available') checkFailures = 0
     // 终态复位：离开 checking 即清空在飞标志（latest / available / downloading / error / idle 都算），
     // 因为"检查在飞"只可能发生在 checking 期间。
     // ⚠ **复位判据只有这一处**，不要在各条 failSource / 事件回调里各写一遍 —— 本 bug 的成因正是
@@ -428,9 +484,25 @@ export function createUpdater(opts) {
     checkOnce({ manual: false })
     scheduleNext()
   }
+  /**
+   * 安排下一次自动检查。
+   * @param {number|null} [override] 显式延迟（如 snooze 到 until）—— **原样使用**：
+   *   退避与抖动只作用于"常规间隔"，否则 snooze 会被抖动成 24h±20%（违反 §7:247 的"不额外等"）。
+   */
   function scheduleNext(override = null) {
     if (autoTimer) clearTimeout(autoTimer)
-    const ms = override ?? (config.autoCheckIntervalHours || AUTO_INTERVAL_DEFAULT_H) * 3600 * 1000
+    let ms
+    if (override != null) {
+      ms = Math.max(MIN_DELAY_MS, Math.round(override))
+    } else {
+      const base = (envInt(CHECK_INTERVAL_ENV) ?? (config.autoCheckIntervalHours || AUTO_INTERVAL_DEFAULT_H) * 3600 * 1000)
+      ms = computeCheckDelayMs({
+        baseMs: base,
+        failures: checkFailures,
+        jitter: envRatio(JITTER_ENV) ?? JITTER_DEFAULT,
+        maxBackoffMs: envInt(MAX_BACKOFF_ENV) ?? MAX_BACKOFF_DEFAULT_MS,
+      })
+    }
     autoTimer = setTimeout(() => checkOnce({ manual: false }), ms)
   }
 
