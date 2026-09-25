@@ -1,6 +1,6 @@
 // 主窗口与受信本地页窗口的创建、安全策略与导航限制。
 // 主窗口不挂桌面 preload；上游页面不得获得任何壳桥。
-import { BrowserWindow, shell, session } from 'electron'
+import { app, BrowserWindow, shell, session } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -189,7 +189,9 @@ export function createMainWindow({ config, logger, isQuitting, isTrayReady }) {
         preload: join(__dirname, '..', 'build', 'preload.cjs'),
         contextIsolation: true, nodeIntegration: false,
         webSecurity: true, sandbox: true, webviewTag: false,
-        additionalArguments: [`--dsh-role=update`, `--dsh-version=${process.versions.electron}`],
+        // 版本统一来自 app.getVersion()（SPEC D4）。曾误传 process.versions.electron：
+        // 更新页的 updateAPI 目前没有 getVersion()，故无实际影响，但属活陷阱（谁加上就会拿到 Electron 版本）。
+        additionalArguments: [`--dsh-role=update`, `--dsh-version=${app.getVersion()}`],
       },
     })
     updateWin = newWin
