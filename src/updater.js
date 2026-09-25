@@ -61,12 +61,15 @@ export function computeCheckDelayMs({ baseMs, failures, jitter, maxBackoffMs, ra
 const SNOOZE_DURATION_MS = 24 * 60 * 60 * 1000
 const NETWORK_FAIL_RE = /timeout|ETIMEDOUT|ENOTFOUND|cloudflare|404|ERR_CERT|CERT_|SSL|ECONNRESET|ECONNREFUSED|UNABLE_TO_VERIFY|SELF_SIGNED/i
 /**
- * 备源 feed URL 的默认值。SPEC §11.1 明确 `https://<占位 COS 域名>/dsh-desktop` 这种占位形态是允许的
- * （真实域名待填），但**它不是合法 URL** —— electron-updater 的 GenericProvider 会在构造时
- * `new URL` 直接抛（实测线上：unhandledRejection Invalid URL → 壳退出）。
- * 因此代码必须容忍占位符：构造不了就把该源记为"未配置"，绝不冒泡。
+ * 备源 feed URL 的默认值（真实 COS 桶，域名经可达性实测；桶 ap-shanghai / dsh-desktop-1432719119）。
+ * ⚠ 「占位符容忍」分支**必须保留** —— 它是**配置缺失时的兜底**：将来换桶、漏填或注入非法值时，
+ *   代码要能记一条"备源未配置"、降级为主源，而不是崩。
+ *   历史背景：默认值曾经就是占位符 `https://<占位 COS 域名>/dsh-desktop`，尖括号让
+ *   electron-updater 构造时 `new URL` 直接抛（unhandledRejection Invalid URL → 壳退出）。
+ *   如今默认值合法，但容忍逻辑（`isHttpUrl` + 逐源 try/catch）仍在此处与 ensureInstances 生效。
+ * 覆盖顺序：`opts.cosUrl`（注入，测试用）→ 本默认值。
  */
-const DEFAULT_COS_URL = 'https://<占位 COS 域名>/dsh-desktop'
+const DEFAULT_COS_URL = 'https://dsh-desktop-1432719119.cos.ap-shanghai.myqcloud.com/dsh-desktop'
 
 /**
  * 是否为可用的 http(s) 地址（占位符与空串都不算）。

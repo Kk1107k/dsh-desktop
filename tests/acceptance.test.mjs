@@ -1272,6 +1272,20 @@ test('§11.1 #7 根源：registry 由壳固定下发（不读用户 .npmrc），
   assert.ok(!/DSH_PORT:\s*String/.test(src), 'DSH_PORT 实测无效（§11.1 #2），不应再作为环境变量下发')
 })
 
+test('§7 默认 COS 源：合法 https 且与打包配置同源（不许占位符进构建）', async () => {
+  const YAML = require('yaml')
+  const src = readFileSync(join(root, 'src', 'updater.js'), 'utf8')
+  const m = /const DEFAULT_COS_URL = '([^']+)'/.exec(src)
+  assert.ok(m, '应存在默认 COS 源常量')
+  const url = m[1]
+  assert.ok(!url.includes('<') && !url.includes('占位'), `默认 COS 源不得含占位符：${url}`)
+  assert.equal(new URL(url).protocol, 'https:', '默认 COS 源必须是 https（启动期 isHttpUrl 自检要能过）')
+  assert.match(new URL(url).hostname, /\.cos\.[a-z-]+\.myqcloud\.com$/, '默认 COS 源应是腾讯云 COS 域名')
+  // 壳内默认源与打包配置必须同源：两处漂移会让客户端与服务端指向不同桶（静默失效）
+  const cfg = YAML.parse(readFileSync(join(root, 'electron-builder.yml'), 'utf8'))
+  assert.equal(cfg.publish.find(p => p.provider === 'generic').url, url, '壳内默认源必须与 electron-builder.yml 一致')
+})
+
 test('A05 终态复位：连续两次检查都能开始（第二次不得 E_BUSY）', async () => {
   globalThis.__DSH_TEST_UPDATER__ = { github: { check: (inst) => { inst.emit('update-not-available', {}) } } }
   const { up, d } = await makeUpdater()
@@ -1327,7 +1341,7 @@ test('§7 备源占位符 URL：初始化不得抛，按"备源未配置"处理�
   globalThis.__DSH_TEST_UPDATER__ = { github: { check: (inst) => { inst.emit('update-not-available', {}) } } }
   const { createUpdater } = await import('../src/updater.js')
   const { deps } = updaterDeps()
-  delete deps.cosUrl                                   // 回到默认占位符 URL（SPEC §11.1 允许的待填形态）
+  deps.cosUrl = 'https://<占位 COS 域名>/dsh-desktop'   // 显式喂占位符：容忍分支必须仍在（将来漏填/换桶的兜底）
   const up = createUpdater(deps)                        // 构造不得抛
 
   const res = await up.checkOnce({ manual: true })
@@ -1508,7 +1522,7 @@ test('A10 after-pack：app-update.yml 源字段规范化为 COS 兜底，保留�
   rmSync(dir, { recursive: true, force: true })
 })
 
-test('A10 electron-builder 配置：NSIS 可选目录、产物入 dist/、归档素材排除、双源占位保留', async () => {
+test('A10 electron-builder 配置：NSIS 可选目录、产物入 dist/、归档素材排除、COS 源填真实域名', async () => {
   const YAML = require('yaml')
   const cfg = YAML.parse(readFileSync(join(root, 'electron-builder.yml'), 'utf8'))
   assert.equal(cfg.appId, 'com.dshdesktop.app')
@@ -1522,7 +1536,8 @@ test('A10 electron-builder 配置：NSIS 可选目录、产物入 dist/、归档
   assert.ok(cfg.files.some(f => String(f).includes('!assets/_archive-')), '归档素材必须排除')
   assert.deepEqual(cfg.win.target, ['nsis'])
   const generic = cfg.publish.find(p => p.provider === 'generic')
-  assert.equal(generic.url, 'https://<占位 COS 域名>/dsh-desktop')
+  assert.equal(generic.url, 'https://dsh-desktop-1432719119.cos.ap-shanghai.myqcloud.com/dsh-desktop',
+    'COS 源必须填真实域名（不得留占位符）')
   assert.equal(generic.channel, 'cn-stable')
 })
 
